@@ -9,7 +9,8 @@ import OrgSync from './OrgSync.jsx';
 import BackupRestore from './BackupRestore.jsx';
 import { submitAndFinaliseBatch, problemRowsCsv, recheckNotFound } from './importBatch.js';
 import { importImpact, importSafeguard, typedConfirmationMatches } from './safeguards.js';
-import { parseCsvTable, guessMapping, missingMappingFields, applyMapping, pickSavedMapping, sameMapping, toSaved, fromSaved, MAPPING_FIELDS } from './csv.js';
+import { parseCsvTable, guessMapping, missingMappingFields, mappingFits, applyMapping, pickSavedMapping, sameMapping, toSaved, fromSaved, MAPPING_FIELDS } from './csv.js';
+import { checkDetails, mergeValidation, detailCount, detailSummary } from './details.js';
 
 // Injected by vite.config.js from the root package.json.
 const APP_VERSION = __APP_VERSION__;
@@ -79,6 +80,8 @@ function App() {
   // Column mapping: the parsed file, the columns chosen for each field, and the mapping the preview used.
   const [csvTable, setCsvTable] = useState(null);
   const [mapping, setMapping] = useState(null);
+  // The site's customer detail fields (empty when the site has none, or before a file is chosen).
+  const [detailFields, setDetailFields] = useState([]);
   const [appliedMapping, setAppliedMapping] = useState(null);
   const [mappingSource, setMappingSource] = useState('');
   const [savedMappings, setSavedMappings] = useState([]);
@@ -151,6 +154,13 @@ function App() {
     } catch (e) { setError(e.message); }
   }
 
+  // An existing customer whose name already matches: skipped, unless the row sets customer details.
+  function sameNameResult(row, i, orgNote) {
+    const n = detailCount(row);
+    if (!n) return { ...row, rowNumber: i + 2, action: 'SKIP', reason: orgNote ? `Customer already matches. ${orgNote}` : 'Customer already matches Jira.' };
+    return { ...row, rowNumber: i + 2, action: 'UPDATE', nameUnchanged: true, reason: `Name already matches; sets ${n === 1 ? '1 customer detail' : `${n} customer details`}. ${orgNote}`.trim() };
+  }
+
   async function buildPreview(parsed, validationResult) {
     if (!parsed.length) { setPreview([]); return; }
     setPreviewing(true); setError('');
@@ -175,7 +185,7 @@ function App() {
           results[i] = !exact
             ? { ...row, rowNumber: i + 2, action: 'CREATE', reason: orgNote || 'New customer.' }
             : String(exact.displayName || '').trim().toLowerCase() === String(row.displayName || '').trim().toLowerCase()
-              ? { ...row, rowNumber: i + 2, action: 'SKIP', reason: orgNote ? `Customer already matches. ${orgNote}` : 'Customer already matches Jira.' }
+              ? sameNameResult(row, i, orgNote)
               : { ...row, rowNumber: i + 2, action: 'UPDATE', reason: `Existing Jira customer: ${exact.displayName || exact.emailAddress}. ${orgNote}`.trim() };
         } catch (e) {
           results[i] = { ...row, rowNumber: i + 2, action: 'ERROR', reason: `Jira lookup failed: ${e.message}` };
@@ -231,9 +241,7 @@ function App() {
         const exact = byEmail.get(email);
         const orgNote = organisationNote(row, orgNames);
         if (!exact) return { ...row, rowNumber: i + 2, action: 'CREATE', reason: orgNote || 'New customer.' };
-        if (String(exact.displayName || '').trim().toLowerCase() === String(row.displayName || '').trim().toLowerCase()) {
-          return { ...row, rowNumber: i + 2, action: 'SKIP', reason: orgNote ? `Customer already matches. ${orgNote}` : 'Customer already matches Jira.' };
-        }
+        if (String(exact.displayName || '').trim().toLowerCase() === String(row.displayName || '').trim().toLowerCase()) return sameNameResult(row, i, orgNote);
         return { ...row, rowNumber: i + 2, action: 'UPDATE', reason: `Existing Jira customer: ${exact.displayName || exact.emailAddress}. ${orgNote}`.trim() };
       });
       setPreview(results);
@@ -250,7 +258,9 @@ function App() {
     if (!session) return;
     if (session.mapping && !sameMapping(fromSaved(session.mapping), usedMapping)) {
       const m = fromSaved(session.mapping);
-      throw new Error(`This file has an interrupted import that used different columns (Email: ${m.email}, Full name: ${m.displayName}${m.organisation ? `, Organisation: ${m.organisation}` : ''}). Choose those columns to resume it.`);
+      const name = m.displayName || [m.firstName, m.lastName].filter(Boolean).join(' + ');
+      const details = Object.entries(m.details || {}).map(([field, column]) => `, ${field}: ${column}`).join('');
+      throw new Error(`This file has an interrupted import that used different columns (Email: ${m.email}, Full name: ${name}${m.organisation ? `, Organisation: ${m.organisation}` : ''}${details}). Choose those columns to resume it.`);
     }
 
     const rowNumbers = Array.isArray(session.actionableRowNumbers) ? session.actionableRowNumbers.map(Number) : [];
@@ -313,15 +323,19 @@ function App() {
     let chosen = null;
     let source = '';
     let session = null;
+    let fields = [];
     try {
       const serviceDeskId = await ensureDeskId();
-      const [saved, recoverable] = await Promise.all([
+      const [saved, recoverable, detail] = await Promise.all([
         invoke('getImportMappings').catch(() => []),
-        invoke('findRecoverableImportSession', { fingerprint, serviceDeskId })
+        invoke('findRecoverableImportSession', { fingerprint, serviceDeskId }),
+        invoke('getCustomerDetailFields').catch(() => ({ fields: [] }))
       ]);
       session = recoverable;
+      fields = detail?.fields || [];
+      setDetailFields(fields);
       setSavedMappings(saved || []);
-      if (session?.mapping && !missingMappingFields(fromSaved(session.mapping), table.headers).length) {
+      if (session?.mapping && mappingFits(fromSaved(session.mapping), table.headers)) {
         chosen = fromSaved(session.mapping);
         source = 'The columns from the interrupted import of this file.';
       } else {
@@ -332,15 +346,15 @@ function App() {
       setError(`Recovery check failed: ${err.message}`);
     }
     if (!chosen) {
-      chosen = guessMapping(table.headers);
+      chosen = guessMapping(table.headers, fields);
       source = missingMappingFields(chosen, table.headers).length ? '' : 'Matched automatically from the column names.';
     }
     setMapping(chosen);
     setMappingSource(source);
-    if (!missingMappingFields(chosen, table.headers).length) await previewWith(table, chosen, session);
+    if (!missingMappingFields(chosen, table.headers).length) await previewWith(table, chosen, session, fields);
   }
 
-  async function previewWith(table, chosen, session) {
+  async function previewWith(table, chosen, session, fields = detailFields) {
     setError('');
     setComparisonProgress(null);
     setImportProgress(null);
@@ -349,15 +363,16 @@ function App() {
     setAppliedMapping(chosen);
     setConfirmingImport(false);
     setTypedConfirmation('');
-    const parsedRows = applyMapping(table, chosen);
+    // Detail values are checked against each field's type and options; a bad cell excludes the row.
+    const { rows: parsedRows, errors: detailErrors } = checkDetails(applyMapping(table, chosen), fields);
     setRows(parsedRows);
     try {
       if (parsedRows.length > 500) {
-        const result = validateRowsLocally(parsedRows);
+        const result = mergeValidation(validateRowsLocally(parsedRows), detailErrors);
         setValidation(result);
         await buildLargePreview(parsedRows, result);
       } else {
-        const result = await invoke('validateImport', { rows: parsedRows });
+        const result = mergeValidation(await invoke('validateImport', { rows: parsedRows.map(({ details, ...row }) => row) }), detailErrors);
         setValidation(result);
         await buildPreview(parsedRows, result);
       }
@@ -587,6 +602,7 @@ function App() {
   const statusKind = (status) => ({ SUBMITTED: 'success', COMPLETE: 'success', RUNNING: 'info', FAILED: 'danger', PAUSED: 'warning' }[String(status || '').toUpperCase()] || 'neutral');
   const plural = (n, one, many = `${one}s`) => `${Number(n).toLocaleString()} ${n === 1 ? one : many}`;
   const changeCount = previewSummary.CREATE + previewSummary.UPDATE;
+  const previewHasDetails = useMemo(() => preview.some((r) => detailCount(r) > 0), [preview]);
   const impact = useMemo(() => importImpact(preview), [preview]);
   const safeguard = useMemo(() => importSafeguard(impact), [impact]);
   const deskName = serviceDesks.find((d) => String(d.id) === String(desk))?.projectName || 'the selected service project';
@@ -643,10 +659,11 @@ function App() {
             {csvTable.headers.length > 0 && missingMappingFields(mapping, csvTable.headers).length > 0 && <Notice kind="warning" title="Choose the columns to import">Pick the column for {missingMappingFields(mapping, csvTable.headers).join(' and ')}. The preview starts once they're chosen.</Notice>}
             {mappingMessage && <Notice kind={mappingMessage.kind}>{mappingMessage.text}</Notice>}
             <div className="nq-grid nq-grid--3">
-              {MAPPING_FIELDS.map(({ key, label, required }) => {
+              {MAPPING_FIELDS.filter(({ key }) => !(mapping.displayName && (key === 'firstName' || key === 'lastName'))).map(({ key, label, required }) => {
                 const col = csvTable.headers.indexOf(mapping[key]);
                 const sample = col >= 0 ? (csvTable.records.find((r) => r[col]) || [])[col] : '';
-                return <Field key={key} label={label} required={required} htmlFor={`map-${key}`} help={sample ? `e.g. ${sample}` : (required ? 'Required' : 'Optional')}>
+                const nameHelp = key === 'displayName' ? 'Or leave this and choose First name and Last name' : (key === 'firstName' || key === 'lastName') ? 'Joined with a space to make the full name' : '';
+                return <Field key={key} label={label} required={required} htmlFor={`map-${key}`} help={sample ? `e.g. ${sample}` : (nameHelp || (required ? 'Required' : 'Optional'))}>
                   <select id={`map-${key}`} className="nq-select" value={mapping[key] || ''} onChange={(e) => { setMapping((m) => ({ ...m, [key]: e.target.value })); setMappingSource(''); }}>
                     <option value="">{required ? 'Choose a column…' : 'Not in this file'}</option>
                     {csvTable.headers.map((h) => <option key={h} value={h}>{h}</option>)}
@@ -654,11 +671,29 @@ function App() {
                 </Field>;
               })}
             </div>
+            {detailFields.length > 0 && <>
+              <h3 className="nq-card__title">Customer details</h3>
+              <p className="nq-help">Values are checked against each field's type and options. A blank cell leaves the customer's current value unchanged.</p>
+              <div className="nq-grid nq-grid--3">
+                {detailFields.map((f) => {
+                  const column = mapping.details?.[f.name] || '';
+                  const col = csvTable.headers.indexOf(column);
+                  const sample = col >= 0 ? (csvTable.records.find((r) => r[col]) || [])[col] : '';
+                  const kind = { SELECT: 'Single choice', MULTISELECT: 'Multiple choice (separate with ;)', NUMBER: 'Number', EMAIL: 'Email', URL: 'Web address' }[f.type] || 'Text';
+                  return <Field key={f.name} label={f.name} htmlFor={`map-detail-${f.name}`} help={sample ? `e.g. ${sample}` : kind}>
+                    <select id={`map-detail-${f.name}`} className="nq-select" value={column} onChange={(e) => { const value = e.target.value; setMapping((m) => { const details = { ...(m.details || {}) }; if (value) details[f.name] = value; else delete details[f.name]; return { ...m, details }; }); setMappingSource(''); }}>
+                      <option value="">Not imported</option>
+                      {csvTable.headers.map((h) => <option key={h} value={h}>{h}</option>)}
+                    </select>
+                  </Field>;
+                })}
+              </div>
+            </>}
             <div className="nq-grid nq-grid--3">
               <div>
                 {savedMappings.length > 0 ? <select className="nq-select" aria-label="Use a saved mapping" value="" onChange={(e) => { const m = savedMappings.find((x) => x.id === e.target.value); if (m) { setMapping(fromSaved(m)); setMappingSource(`Using the saved mapping "${m.name}".`); setMappingName(m.name); } }}>
                   <option value="">Use a saved mapping…</option>
-                  {savedMappings.map((m) => <option key={m.id} value={m.id} disabled={missingMappingFields(fromSaved(m), csvTable.headers).length > 0}>{m.name}{missingMappingFields(fromSaved(m), csvTable.headers).length ? ' (columns not in this file)' : ''}</option>)}
+                  {savedMappings.map((m) => <option key={m.id} value={m.id} disabled={!mappingFits(fromSaved(m), csvTable.headers)}>{m.name}{mappingFits(fromSaved(m), csvTable.headers) ? '' : ' (columns not in this file)'}</option>)}
                 </select> : <p className="nq-help">No saved mappings yet.</p>}
               </div>
               <input className="nq-input" aria-label="Mapping name" placeholder="Name this mapping" value={mappingName} onChange={(e) => setMappingName(e.target.value)}/>
@@ -701,7 +736,7 @@ function App() {
         {previewing && <Loading text="Checking existing Jira customers and organisations…"/>}
 
         {preview.length > 0 && <Card title="Import preview" description={preview.length > 500 ? `Showing the first 500 of ${preview.length.toLocaleString()} rows.` : undefined}>
-          <div className="nq-table-wrap"><table className="nq-table"><thead><tr><th>Row</th><th>Action</th><th>Name</th><th>Email</th><th>Organisation</th><th>Reason</th></tr></thead><tbody>{preview.slice(0, 500).map((r, i) => <tr key={`${r.email}-${i}`}><td>{r.rowNumber}</td><td><Lozenge kind={actionKind[r.action] || 'neutral'}>{r.action}</Lozenge></td><td>{r.displayName || '—'}</td><td>{r.email || '—'}</td><td>{r.organisation || '—'}</td><td>{r.reason}</td></tr>)}</tbody></table></div>
+          <div className="nq-table-wrap"><table className="nq-table"><thead><tr><th>Row</th><th>Action</th><th>Name</th><th>Email</th><th>Organisation</th>{previewHasDetails && <th>Customer details</th>}<th>Reason</th></tr></thead><tbody>{preview.slice(0, 500).map((r, i) => <tr key={`${r.email}-${i}`}><td>{r.rowNumber}</td><td><Lozenge kind={actionKind[r.action] || 'neutral'}>{r.action}</Lozenge></td><td>{r.displayName || '—'}</td><td>{r.email || '—'}</td><td>{r.organisation || '—'}</td>{previewHasDetails && <td>{detailSummary(r) || '—'}</td>}<td>{r.reason}</td></tr>)}</tbody></table></div>
         </Card>}
 
         {importProgress && <Card title={importProgress.state === 'complete' ? 'Import batches finished' : importProgress.state === 'rechecking' ? 'Finishing new customers' : importProgress.state === 'failed' ? 'Import paused safely' : importProgress.state === 'recovered' ? 'Saved import recovered' : importProgress.state === 'preparing' ? 'Preparing import' : 'Submitting import batches'}>
@@ -717,7 +752,8 @@ function App() {
           <p>This is a large import ({safeguard.reasons.join(', ')}). It will change {deskName}:</p>
           <ul>
             {impact.create > 0 && <li>{plural(impact.create, 'new customer')} created and added to the project</li>}
-            {impact.update > 0 && <li>{plural(impact.update, 'existing customer')} renamed to the name in the file</li>}
+            {impact.renames > 0 && <li>{plural(impact.renames, 'existing customer')} renamed to the name in the file</li>}
+            {impact.update > impact.renames && <li>{plural(impact.update - impact.renames, 'existing customer')} with customer details updated</li>}
             {impact.newOrganisations.length > 0 && <li>{plural(impact.newOrganisations.length, 'organisation')} created: {impact.newOrganisations.slice(0, 10).join(', ')}{impact.newOrganisations.length > 10 ? `, and ${(impact.newOrganisations.length - 10).toLocaleString()} more` : ''}</li>}
           </ul>
           <p>Jira has no undo for this. Check the preview above first.</p>

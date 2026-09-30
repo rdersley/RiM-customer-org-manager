@@ -1,6 +1,6 @@
 # Security — Retail inMotion Customer & Organisation Manager
 
-_Last updated: 29 September 2026 (app version 0.5.0)._
+_Last updated: 30 September 2026 (app version 0.7.0)._
 
 ## Architecture
 
@@ -37,8 +37,9 @@ Production fails closed. Without an active licence, reads and previews work, and
 | `read:servicedesk-request` | `GET /rest/servicedeskapi/servicedesk`, listing service projects |
 | `manage:servicedesk-customer` | Listing a service project's customers, listing organisations, creating organisations, and adding imported customers to the service project and to organisations (`/rest/servicedeskapi/servicedesk/{id}/customer`, `/rest/servicedeskapi/organization`, `/rest/servicedeskapi/organization/{id}/user`) |
 | `write:customer:jira-service-management` | Creating and updating customers through the JSM customer bulk API |
-| `write:customer.profile:jira-service-management` | Writing customer profiles (display name, organisation membership) in the same bulk API call |
+| `write:customer.profile:jira-service-management` | Writing customer profiles (display name and customer detail values) in the same bulk API call |
 | `read:task:jira-service-management` | Reading bulk task status (`/jsm/csm/api/v1/tasks/{id}`) for Import History |
+| `read:customer.detail-field:jira-service-management` | Import: listing the site's customer detail fields (`GET /jsm/csm/api/v1/customer/details`: names, types and options) for the column mapping. Added in 0.7.0 |
 
 Version 0.3.0 removed six scopes that nothing used: `read:user:jira`, `read:organization`, `write:organization`, `write:organization.profile`, `read:customer` and `read:customer.profile` (the last five are the `:jira-service-management` granular scopes).
 

@@ -23,6 +23,7 @@ export function resetSite(count = 0) {
   site.createmeta = {}; // projectKey -> [{ id, fields: [{ fieldId, allowedValues }] }]; a project set to 'forbidden' returns 403
   site.searchLag = 0; // like the live site: a new account is only found by user search after this many searches
   site.isAdmin = true;
+  site.detailFields = null; // customer detail field definitions (CSM); null = the site has none (404)
   site.issues = new Map();
   site.failIssueIds = new Set();
   // Service projects, and the organisations added to each (Jira only accepts those on a ticket).
@@ -163,6 +164,9 @@ async function requestJira(as, path, options = {}) {
     const limit = Number(query.get('limit'));
     const values = site.organizations.slice(start, start + limit);
     return json({ start, limit, size: values.length, values, isLastPage: start + limit >= site.organizations.length });
+  }
+  if (path === '/jsm/csm/api/v1/customer/details' && method === 'GET') {
+    return site.detailFields ? json({ results: site.detailFields }) : json({ message: 'Not found' }, 404);
   }
   // Like the live site: bulk tasks end FAILED with no failures even though the accounts were written.
   if (path.startsWith('/jsm/csm/api/v1/tasks/')) return json({ id: path.split('/').pop(), status: site.taskStatus || 'FAILED', failures: [] });

@@ -9,7 +9,7 @@ import { exportBackupPage, importBackupBatch } from './backup.js';
 export { handleIssueEvent } from './sync/events.js';
 
 // Must match package.json (a unit test checks this).
-export const APP_VERSION = '0.6.2';
+export const APP_VERSION = '0.7.0';
 
 const resolver = new Resolver();
 // Every Jira call from the admin page goes through this: it backs off on 429/503 (src/http.js).
@@ -236,6 +236,45 @@ secureDefine('createImportOrganizations', async ({ payload }) => {
   return { created };
 }, { write: true });
 
+// The CSV columns a mapping uses: the core fields plus { customerDetailName: header }. Header names only;
+// no cell values are stored.
+const header = (v) => String(v || '').trim().slice(0, 255);
+function cleanMapping(m) {
+  const detailHeaders = {};
+  for (const [field, column] of Object.entries(m?.detailHeaders && typeof m.detailHeaders === 'object' ? m.detailHeaders : {}).slice(0, 50)) {
+    if (header(field) && header(column)) detailHeaders[header(field)] = header(column);
+  }
+  return {
+    emailHeader: header(m?.emailHeader),
+    displayNameHeader: header(m?.displayNameHeader),
+    firstNameHeader: header(m?.firstNameHeader),
+    lastNameHeader: header(m?.lastNameHeader),
+    organisationHeader: header(m?.organisationHeader),
+    detailHeaders
+  };
+}
+
+// The site's customer detail fields (Customer Service Management), for the import column mapping.
+export function toDetailFields(body) {
+  const list = Array.isArray(body) ? body : (body?.results || body?.values || []);
+  return list
+    .map((f) => ({
+      name: String(f?.name || '').trim(),
+      type: String(f?.type?.name || f?.type || 'TEXT').toUpperCase(),
+      options: (f?.type?.options || f?.options || []).map((o) => (typeof o === 'object' ? String(o?.value ?? o?.name ?? '') : String(o))).filter(Boolean),
+      position: Number(f?.configuration?.position ?? 0)
+    }))
+    .filter((f) => f.name)
+    .sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
+}
+
+secureDefine('getCustomerDetailFields', async () => {
+  const res = await asUser().requestJira(route`/jsm/csm/api/v1/customer/details`, { headers: { Accept: 'application/json' } });
+  // Sites without Customer Service Management have no detail fields; the import still works without them.
+  if (res.status === 404) return { fields: [], available: false };
+  return { fields: toDetailFields(await jsonResponse(res)), available: true };
+});
+
 secureDefine('getImportMappings', async () => {
   const result = await kvs.query().where('key', WhereConditions.beginsWith('import-mapping:')).limit(50).getMany();
   return (result.results || []).map((r) => r.value).sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
@@ -246,11 +285,10 @@ secureDefine('saveImportMapping', async ({ payload }) => {
   const name = String(payload?.name || '').trim().slice(0, 100);
   const serviceDeskId = String(payload?.serviceDeskId || '').trim();
   const emailHeader = String(payload?.emailHeader || '').trim().slice(0, 255);
-  const displayNameHeader = String(payload?.displayNameHeader || '').trim().slice(0, 255);
-  const organisationHeader = String(payload?.organisationHeader || '').trim().slice(0, 255);
+  const columns = cleanMapping(payload);
   if (!name) throw new Error('Mapping name is required');
   if (!serviceDeskId) throw new Error('serviceDeskId is required');
-  if (!emailHeader || !displayNameHeader) throw new Error('Email and Display Name mappings are required');
+  if (!emailHeader || !(columns.displayNameHeader || columns.firstNameHeader || columns.lastNameHeader)) throw new Error('Email and Full name (or First name and Last name) mappings are required');
 
   const key = `import-mapping:${id}`;
   const existing = await kvs.get(key);
@@ -259,9 +297,8 @@ secureDefine('saveImportMapping', async ({ payload }) => {
     id,
     name,
     serviceDeskId,
+    ...columns,
     emailHeader,
-    displayNameHeader,
-    organisationHeader,
     createdAt: existing?.createdAt || now,
     updatedAt: now
   };
@@ -358,8 +395,7 @@ secureDefine('startImportSession', async ({ payload }) => {
   const skipped = Math.max(0, Number(payload?.skipped || 0));
   const excludedErrors = Math.max(0, Number(payload?.excludedErrors || 0));
   // The CSV columns used for this import, so a resume reads the same columns.
-  const header = (v) => String(v || '').trim().slice(0, 255);
-  const mapping = payload?.mapping ? { emailHeader: header(payload.mapping.emailHeader), displayNameHeader: header(payload.mapping.displayNameHeader), organisationHeader: header(payload.mapping.organisationHeader) } : null;
+  const mapping = payload?.mapping ? cleanMapping(payload.mapping) : null;
 
   if (!id) throw new Error('Import session id is required');
   if (!/^[a-f0-9]{64}$/.test(fingerprint)) throw new Error('A SHA-256 import fingerprint is required');
@@ -419,6 +455,15 @@ secureDefine('validateImport', async ({ payload }) => {
   return { total: rows.length, valid: Math.max(0, rows.length - new Set(errors.map(e => e.row)).size), errors };
 });
 
+// { fieldName: value | [values] } → [{ name, values }], dropping blanks.
+export function customerDetails(details) {
+  if (!details || typeof details !== 'object') return [];
+  return Object.entries(details).slice(0, 50).map(([name, values]) => ({
+    name: String(name).trim(),
+    values: [].concat(values).map((v) => String(v ?? '').trim().slice(0, 255)).filter(Boolean)
+  })).filter((d) => d.name && d.values.length);
+}
+
 secureDefine('bulkUpsertCustomers', async ({ payload }) => {
   const rows = Array.isArray(payload?.rows) ? payload.rows : [];
   if (!rows.length) throw new Error('No rows supplied');
@@ -427,13 +472,19 @@ secureDefine('bulkUpsertCustomers', async ({ payload }) => {
   // Creates or updates the customer accounts only. Service project and organisation membership are added
   // afterwards by finaliseImportBatch (src/import/finalise.js), because this API can't do the first and,
   // on a live site, silently didn't do the second.
-  const customerProfiles = rows.map((row) => ({
-    operationType: 'UPSERT',
-    payload: {
-      email: String(row.email || '').trim(),
-      displayName: String(row.displayName || row.fullName || '').trim()
-    }
-  }));
+  // Customer detail values go in the same call. Only non-blank values are sent, so a blank cell leaves
+  // the customer's current value unchanged.
+  const customerProfiles = rows.map((row) => {
+    const details = customerDetails(row.details);
+    return {
+      operationType: 'UPSERT',
+      payload: {
+        email: String(row.email || '').trim(),
+        displayName: String(row.displayName || row.fullName || '').trim(),
+        ...(details.length ? { details } : {})
+      }
+    };
+  });
 
   const suppliedKey = String(payload?.idempotencyKey || '').trim();
   const idempotencyKey = suppliedKey || globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;

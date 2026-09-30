@@ -1,6 +1,6 @@
 # Data handling — Retail inMotion Customer & Organisation Manager
 
-_Last checked against the code: 29 September 2026 (app version 0.6.0)._
+_Last checked against the code: 30 September 2026 (app version 0.7.0)._
 
 This is the source of truth for the Privacy & Security questionnaire and the public security page. If the code changes what is read, written or stored, update this file in the same pull request.
 
@@ -21,20 +21,21 @@ This is the source of truth for the Privacy & Security questionnaire and the pub
 | Customers of a service project (account id, display name, email) | `GET /rest/servicedeskapi/servicedesk/{id}/customer` | Customer list/search and the import comparison |
 | Organisations (id, name) | `GET /rest/servicedeskapi/organization` | Organisation list, and matching CSV organisation names |
 | Bulk task status | `GET /jsm/csm/api/v1/tasks/{id}` | Import History status column |
+| Customer detail field definitions (name, type, options) | `GET /jsm/csm/api/v1/customer/details` | Import column mapping, and checking detail values before import |
 | Jira field list (id, name, type) | `GET /rest/api/3/field` | Finding the Organizations and Request Type fields, and Client field candidates |
 | A ticket's project, Client, Organizations and Request Type fields | `GET /rest/api/3/issue/{id}?fields=…` | Sync: deciding the correct organisations |
 | Tickets in the selected projects with a Client value (the same fields) | `POST /rest/api/3/search/jql` | Sync health check |
 | Client value suggestions | `GET /rest/api/3/jql/autocompletedata/suggestions` | Filling in the mapping table |
 | An imported customer's account id, found by email | `GET /rest/api/3/user/search?query=<email>` | Finishing an import batch: adding the customer to the service project and organisations |
 
-Customer names and emails are shown in the browser and used in memory for the preview. **They are never written to app storage.**
+Customer names, emails and detail values are shown in the browser and used in memory for the preview. **They are never written to app storage.** Saved mappings and import sessions store column header names only.
 
 ## Data written to Jira / JSM
 
 | Change | API | When |
 |---|---|---|
 | Create an organisation | `POST /rest/servicedeskapi/organization` | Only for organisation names that a complete scan of the site proved missing, when an administrator clicks Import or Resume |
-| Create or update customer accounts (email, display name) | `POST /jsm/csm/api/v1/customer/profile/bulk` | When an administrator clicks Import or Resume; at most 100 rows per request, each with an idempotency key |
+| Create or update customer accounts (email, display name, and the customer detail values mapped in the import; blank cells are not sent) | `POST /jsm/csm/api/v1/customer/profile/bulk` | When an administrator clicks Import or Resume; at most 100 rows per request, each with an idempotency key |
 | Add imported customers to the selected service project | `POST /rest/servicedeskapi/servicedesk/{id}/customer` | After each batch's bulk task ends; up to 50 accounts per call |
 | Add imported customers to their organisations | `POST /rest/servicedeskapi/organization/{id}/user` | After each batch's bulk task ends; up to 50 accounts per call |
 | Set a ticket's Organizations field | `PUT /rest/api/3/issue/{id}` (Organizations field only) | Sync: when sync is on and a ticket in a selected project is created or its Client changes (as the app); or when an administrator confirms **Correct N tickets** (as the administrator) |

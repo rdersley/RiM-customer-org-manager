@@ -58,12 +58,16 @@ const csvCell = (value) => {
 };
 
 // CSV of rows that didn't finish, in the import's own format plus the reason, so they can be fixed and re-imported.
+// Customer detail columns are added (named after the fields, so the mapping matches them) when rows have any.
 export function problemRowsCsv(problems, rowsByNumber) {
-  const lines = ['Email,Full Name,Organisation,Row,Problem'];
-  for (const p of problems) {
-    const row = rowsByNumber.get(p.rowNumber) || {};
-    lines.push([p.email, row.displayName || '', row.organisation || '', p.rowNumber, p.error || p.status].map(csvCell).join(','));
-  }
+  const rows = problems.map((p) => rowsByNumber.get(p.rowNumber) || {});
+  const detailNames = [...new Set(rows.flatMap((row) => Object.keys(row.details || {})))];
+  const lines = [['Email', 'Full Name', 'Organisation', ...detailNames, 'Row', 'Problem'].map(csvCell).join(',')];
+  problems.forEach((p, i) => {
+    const row = rows[i];
+    const details = detailNames.map((name) => [].concat(row.details?.[name] ?? []).join('; '));
+    lines.push([p.email, row.displayName || '', row.organisation || '', ...details, p.rowNumber, p.error || p.status].map(csvCell).join(','));
+  });
   return `${lines.join('\n')}\n`;
 }
 

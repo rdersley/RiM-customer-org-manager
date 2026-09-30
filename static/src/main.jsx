@@ -82,6 +82,7 @@ function App() {
   const [mapping, setMapping] = useState(null);
   // The site's customer detail fields (empty when the site has none, or before a file is chosen).
   const [detailFields, setDetailFields] = useState([]);
+  const [detailFieldsError, setDetailFieldsError] = useState('');
   const [appliedMapping, setAppliedMapping] = useState(null);
   const [mappingSource, setMappingSource] = useState('');
   const [savedMappings, setSavedMappings] = useState([]);
@@ -329,11 +330,12 @@ function App() {
       const [saved, recoverable, detail] = await Promise.all([
         invoke('getImportMappings').catch(() => []),
         invoke('findRecoverableImportSession', { fingerprint, serviceDeskId }),
-        invoke('getCustomerDetailFields').catch(() => ({ fields: [] }))
+        invoke('getCustomerDetailFields').catch((err) => ({ fields: [], error: err.message }))
       ]);
       session = recoverable;
       fields = detail?.fields || [];
       setDetailFields(fields);
+      setDetailFieldsError(detail?.error || '');
       setSavedMappings(saved || []);
       if (session?.mapping && mappingFits(fromSaved(session.mapping), table.headers)) {
         chosen = fromSaved(session.mapping);
@@ -658,6 +660,7 @@ function App() {
             {!csvTable.headers.length && <Notice kind="error" title="This file has no header row">The first row must name the columns, for example Email, Full Name, Organisation.</Notice>}
             {csvTable.headers.length > 0 && missingMappingFields(mapping, csvTable.headers).length > 0 && <Notice kind="warning" title="Choose the columns to import">Pick the column for {missingMappingFields(mapping, csvTable.headers).join(' and ')}. The preview starts once they're chosen.</Notice>}
             {mappingMessage && <Notice kind={mappingMessage.kind}>{mappingMessage.text}</Notice>}
+            {detailFieldsError && <Notice kind="warning" title="Customer details couldn't be loaded">{detailFieldsError} You can still import names, emails and organisations.</Notice>}
             <div className="nq-grid nq-grid--3">
               {MAPPING_FIELDS.filter(({ key }) => !(mapping.displayName && (key === 'firstName' || key === 'lastName'))).map(({ key, label, required }) => {
                 const col = csvTable.headers.indexOf(mapping[key]);

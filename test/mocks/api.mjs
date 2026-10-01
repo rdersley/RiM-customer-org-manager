@@ -23,6 +23,7 @@ export function resetSite(count = 0) {
   site.createmeta = {}; // projectKey -> [{ id, fields: [{ fieldId, allowedValues }] }]; a project set to 'forbidden' returns 403
   site.searchLag = 0; // like the live site: a new account is only found by user search after this many searches
   site.isAdmin = true;
+  site.taskLimit = 0; // the next N bulk calls are refused like the live site: 400 Maximum number of tasks reached
   site.detailFields = null; // customer detail field definitions (CSM); null = the site has none (404)
   site.issues = new Map();
   site.failIssueIds = new Set();
@@ -171,6 +172,7 @@ async function requestJira(as, path, options = {}) {
   // Like the live site: bulk tasks end FAILED with no failures even though the accounts were written.
   if (path.startsWith('/jsm/csm/api/v1/tasks/')) return json({ id: path.split('/').pop(), status: site.taskStatus || 'FAILED', failures: [] });
   if (path === '/jsm/csm/api/v1/customer/profile/bulk' && method === 'POST') {
+    if (site.taskLimit > 0) { site.taskLimit -= 1; return json({ errorMessage: 'Maximum number of tasks reached', errors: ['BAD_REQUEST'], statusCode: 400 }, 400); }
     const { customerProfiles } = JSON.parse(options.body);
     site.bulkRequests.push({ idempotencyKey: options.headers?.['Idempotency-Key'], customerProfiles });
     for (const { payload } of customerProfiles) {

@@ -7,7 +7,7 @@ import { AppHeader, Tabs, Card, Button, Notice, EmptyState, Loading, Lozenge, Fi
 import { organisationNote, lookupOrganisations, attachOrganisationIds, loadAllOrganisations } from './organisations.js';
 import OrgSync from './OrgSync.jsx';
 import BackupRestore from './BackupRestore.jsx';
-import { submitAndFinaliseBatch, problemRowsCsv, recheckNotFound } from './importBatch.js';
+import { submitAndFinaliseBatch, problemRowsCsv, recheckNotFound, isTaskLimitError, TASK_LIMIT_WAIT } from './importBatch.js';
 import { importImpact, importSafeguard, typedConfirmationMatches } from './safeguards.js';
 import { parseCsvTable, guessMapping, missingMappingFields, mappingFits, applyMapping, pickSavedMapping, sameMapping, toSaved, fromSaved, MAPPING_FIELDS } from './csv.js';
 import { checkDetails, mergeValidation, detailCount, detailSummary } from './details.js';
@@ -411,6 +411,7 @@ function App() {
     const chunk = plan.chunks[batchIndex];
     const batchNumber = batchIndex + 1;
     let lastError;
+    let limitWaits = 0;
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       setImportProgress({
         state: 'running',
@@ -427,6 +428,25 @@ function App() {
         return await submitAndFinaliseBatch(invoke, plan, batchIndex);
       } catch (e) {
         lastError = e;
+        // Jira is still working through earlier tasks: wait a minute and try the same batch again. This
+        // doesn't use up an attempt; after an hour the import pauses and can be resumed later.
+        if (isTaskLimitError(e) && limitWaits < TASK_LIMIT_WAIT.maxWaits) {
+          limitWaits += 1;
+          attempt -= 1;
+          setImportProgress({
+            state: 'waiting',
+            sessionId: plan.sessionId,
+            totalRows: plan.totalRows,
+            totalBatches: plan.chunks.length,
+            completedBatches: batchIndex,
+            completedRows: Math.min(batchIndex * 100, plan.totalRows),
+            currentBatch: batchNumber,
+            waited: limitWaits,
+            maxWaits: TASK_LIMIT_WAIT.maxWaits
+          });
+          await new Promise((resolve) => setTimeout(resolve, TASK_LIMIT_WAIT.intervalMs));
+          continue;
+        }
         if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, attempt * 1200));
       }
     }
@@ -742,13 +762,17 @@ function App() {
           <div className="nq-table-wrap"><table className="nq-table"><thead><tr><th>Row</th><th>Action</th><th>Name</th><th>Email</th><th>Organisation</th>{previewHasDetails && <th>Customer details</th>}<th>Reason</th></tr></thead><tbody>{preview.slice(0, 500).map((r, i) => <tr key={`${r.email}-${i}`}><td>{r.rowNumber}</td><td><Lozenge kind={actionKind[r.action] || 'neutral'}>{r.action}</Lozenge></td><td>{r.displayName || '—'}</td><td>{r.email || '—'}</td><td>{r.organisation || '—'}</td>{previewHasDetails && <td>{detailSummary(r) || '—'}</td>}<td>{r.reason}</td></tr>)}</tbody></table></div>
         </Card>}
 
-        {importProgress && <Card title={importProgress.state === 'complete' ? 'Import batches finished' : importProgress.state === 'rechecking' ? 'Finishing new customers' : importProgress.state === 'failed' ? 'Import paused safely' : importProgress.state === 'recovered' ? 'Saved import recovered' : importProgress.state === 'preparing' ? 'Preparing import' : 'Submitting import batches'}>
+        {importProgress && <Card title={importProgress.state === 'complete' ? 'Import batches finished' : importProgress.state === 'rechecking' ? 'Finishing new customers' : importProgress.state === 'failed' ? 'Import paused safely' : importProgress.state === 'waiting' ? 'Waiting for Jira' : importProgress.state === 'recovered' ? 'Saved import recovered' : importProgress.state === 'preparing' ? 'Preparing import' : 'Submitting import batches'}>
           {importProgress.state === 'preparing' && <Loading text={`Preparing organisations and ${plural(importProgress.totalRows, 'customer change')}…`}/>}
           {importProgress.state === 'recovered' && <p><strong>This exact CSV matches a saved interrupted import.</strong> {importProgress.completedRows.toLocaleString()} of {plural(importProgress.totalRows, 'row')} were already submitted. Resume continues from batch {importProgress.currentBatch} of {importProgress.totalBatches} using the original row plan. Organisations are only checked or created when you click Resume.</p>}
           {importProgress.state !== 'preparing' && importProgress.state !== 'recovered' && <p><strong>{importProgress.completedRows.toLocaleString()} of {plural(importProgress.totalRows, 'row')} submitted</strong> across {importProgress.completedBatches} of {plural(importProgress.totalBatches, 'batch', 'batches')}.</p>}
           {importProgress.state === 'rechecking' && <Loading text={`Waiting for Jira to finish creating ${plural(importProgress.waiting, 'new customer')} before adding them to the project and organisations (check ${importProgress.attempt} of ${importProgress.attempts})…`}/>}
           {importProgress.state === 'running' && <Loading text={`Processing batch ${importProgress.currentBatch} of ${importProgress.totalBatches}${importProgress.attempt > 1 ? `, retry ${importProgress.attempt} of 3` : ''}…`}/>}
-          {importProgress.state === 'failed' && <Notice kind="error">Batch {importProgress.currentBatch} failed after three attempts. Earlier batches stay recorded, and retrying reuses the same idempotency key, so batches Jira already accepted aren't resubmitted.</Notice>}
+          {importProgress.state === 'waiting' && <Loading text={`Jira is still working through earlier import tasks and isn't accepting new ones yet. Batch ${importProgress.currentBatch} will be sent when it does (checked every minute, ${importProgress.waited} of ${importProgress.maxWaits}). Keep this page open.`}/>}
+          {importProgress.state === 'failed' && <Notice kind="error" title={`Batch ${importProgress.currentBatch} wasn't accepted`}>
+            <p>{isTaskLimitError(importProgress.error) ? 'Jira still had too many unfinished import tasks after an hour of waiting. Try Resume later; Jira finishes them in the background.' : `Jira's reply: ${importProgress.error || 'no details'}`}</p>
+            <p>Earlier batches stay recorded, and retrying reuses the same idempotency key, so batches Jira already accepted aren't resubmitted.</p>
+          </Notice>}
         </Card>}
 
         {confirmingImport && !loading && <Notice kind="warning" title={`Check before importing ${plural(impact.changes, 'customer change')}`}>

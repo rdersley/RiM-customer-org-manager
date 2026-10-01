@@ -67,3 +67,17 @@ test('if Jira keeps rate-limiting, the trigger logs it and returns instead of th
   assert.match(entry.error, /rate-limiting/);
   assert.deepEqual(orgIdsOf(2), []);
 });
+
+test("Jira's task limit comes back as a message the browser recognises, and the batch can be sent again", async () => {
+  const { site: mockSite } = await import('./mocks/api.mjs');
+  const { handler: h } = await import('../src/index.js');
+  const { isTaskLimitError } = await import('../static/src/importBatch.js');
+  mockSite.taskLimit = 1;
+  const send = () => h.bulkUpsertCustomers({ payload: { rows: [{ email: 'limit@x.test', displayName: 'L' }], idempotencyKey: 'limit-1' }, context: { environmentType: 'DEVELOPMENT' } });
+  const error = await send().catch((e) => e);
+  assert.ok(isTaskLimitError(error), error.message);
+  assert.match(error.message, /limit of unfinished customer import tasks/);
+  assert.equal(isTaskLimitError(new Error('Valid email required')), false);
+  const task = await send();
+  assert.ok(task.id, 'accepted once Jira has room');
+});

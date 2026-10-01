@@ -7,7 +7,9 @@
 const TERMINAL = new Set(['COMPLETE', 'COMPLETED', 'SUCCESS', 'DONE', 'FAILED', 'CANCELLED']);
 const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-export async function waitForTask(invoke, taskId, { timeoutMs = 90000, intervalMs = 2000, sleep = defaultSleep, now = Date.now } = {}) {
+// Waits up to 10 minutes. Moving on while a task is still running would pile up unfinished tasks, and
+// Jira refuses new ones once it has too many ("Maximum number of tasks reached").
+export async function waitForTask(invoke, taskId, { timeoutMs = 600000, intervalMs = 3000, sleep = defaultSleep, now = Date.now } = {}) {
   const deadline = now() + timeoutMs;
   for (;;) {
     let status = '';
@@ -51,6 +53,11 @@ export async function submitAndFinaliseBatch(invoke, plan, batchIndex, options =
     problems: (finalised.results || []).filter((r) => r.status !== 'done')
   };
 }
+
+export const isTaskLimitError = (error) => /maximum number of tasks/i.test(String(error?.message || error || ''));
+
+// How long the import waits for Jira to work through earlier tasks before it pauses: every minute, for up to an hour.
+export const TASK_LIMIT_WAIT = { intervalMs: 60000, maxWaits: 60 };
 
 const csvCell = (value) => {
   const text = String(value ?? '');

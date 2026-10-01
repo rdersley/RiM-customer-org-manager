@@ -11,6 +11,10 @@ export { handleIssueEvent } from './sync/events.js';
 // Must match package.json (a unit test checks this).
 export const APP_VERSION = '0.7.0';
 
+// Jira's customer bulk API refuses new tasks while too many earlier ones are unfinished. The browser
+// recognises this message (static/src/importBatch.js) and waits instead of failing the batch.
+export const TASK_LIMIT_MESSAGE = 'Jira has reached its limit of unfinished customer import tasks (Maximum number of tasks reached).';
+
 const resolver = new Resolver();
 // Every Jira call from the admin page goes through this: it backs off on 429/503 (src/http.js).
 const asUser = () => retrying(api.asUser());
@@ -20,7 +24,8 @@ async function jsonResponse(response) {
   let body;
   try { body = text ? JSON.parse(text) : null; } catch { body = { raw: text }; }
   if (!response.ok) {
-    const error = new Error(response.status === 429 ? RATE_LIMITED_MESSAGE : (body?.message || body?.errorMessage || `Atlassian API error ${response.status}`));
+    const raw = body?.message || body?.errorMessage || `Atlassian API error ${response.status}`;
+    const error = new Error(response.status === 429 ? RATE_LIMITED_MESSAGE : (/maximum number of tasks/i.test(raw) ? TASK_LIMIT_MESSAGE : raw));
     error.status = response.status;
     error.body = body;
     throw error;

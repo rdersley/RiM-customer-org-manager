@@ -71,12 +71,15 @@ export async function loadRowPlan(invoke, session) {
 // so the common fields are tried and anything unrecognised is shown as the raw entry.
 const text = (v) => (v == null ? '' : typeof v === 'string' ? v : Array.isArray(v) ? v.map(text).filter(Boolean).join('; ') : typeof v === 'object' ? (v.message || v.errorMessage || v.reason || v.code ? text(v.message || v.errorMessage || v.reason || v.code) : JSON.stringify(v)) : String(v));
 export function describeFailure(failure) {
-  if (failure == null || typeof failure !== 'object') return { who: '', why: text(failure) || 'No reason given' };
+  if (failure == null || typeof failure !== 'object') return { who: '', why: text(failure) || 'No reason given', extra: '' };
   const p = failure.payload || failure.customerProfile || failure.item || {};
   const who = text(failure.email || failure.emailAddress || p.email || p.emailAddress || failure.identifier || failure.key || failure.id || '');
   const why = text(failure.errorMessage || failure.message || failure.errors || failure.error || failure.reason || failure.errorMessages || failure.code)
     || JSON.stringify(failure).slice(0, 300);
-  return { who, why };
+  // Everything else Jira sent (e.g. which row or field), so a bare message like "Invalid detail field value" can be traced.
+  const { errorMessage, message, ...rest } = failure;
+  const extra = Object.keys(rest).length ? JSON.stringify(rest).slice(0, 500) : '';
+  return { who, why, extra };
 }
 
 // Failure reasons across tasks, most common first: [{ why, count }].

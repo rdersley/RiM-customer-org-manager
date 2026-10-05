@@ -165,8 +165,9 @@ test('new accounts that Jira search has not indexed yet are found by the end-of-
 });
 
 test('task failures are described from common Jira shapes, falling back to the raw entry', () => {
-  assert.deepEqual(describeFailure({ payload: { email: 'a@x.test' }, errors: [{ message: 'Invalid option for Base' }] }), { who: 'a@x.test', why: 'Invalid option for Base' });
-  assert.deepEqual(describeFailure({ email: 'b@x.test', errorMessage: 'Email is not valid' }), { who: 'b@x.test', why: 'Email is not valid' });
+  assert.deepEqual(describeFailure({ payload: { email: 'a@x.test' }, errors: [{ message: 'Invalid option for Base' }] }), { who: 'a@x.test', why: 'Invalid option for Base', extra: '{"payload":{"email":"a@x.test"},"errors":[{"message":"Invalid option for Base"}]}' });
+  assert.deepEqual(describeFailure({ email: 'b@x.test', errorMessage: 'Email is not valid' }), { who: 'b@x.test', why: 'Email is not valid', extra: '{"email":"b@x.test"}' });
+  assert.equal(describeFailure({ message: 'Invalid detail field value', index: 4 }).extra, '{"index":4}');
   assert.equal(describeFailure({ odd: 1 }).why, '{"odd":1}');
   assert.deepEqual(failureReasons([{ failures: [{ message: 'X' }, { message: 'Y' }, { message: 'X' }] }, null, { failures: [] }]), [{ why: 'X', count: 2 }, { why: 'Y', count: 1 }]);
 });

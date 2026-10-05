@@ -61,6 +61,59 @@ export async function submitAndFinaliseBatch(invoke, plan, batchIndex, options =
   };
 }
 
+// The direct route (src/import/direct.js): a batch of up to 100 rows goes out as requests of
+// DIRECT_ROWS customers, DIRECT_PARALLEL at a time. A request that fails (e.g. a function timeout while
+// Jira rate-limits) is retried on its own after a pause; every step is safe to repeat. Then the batch is
+// recorded on the import session.
+export const DIRECT_ROWS = 10;
+export const DIRECT_PARALLEL = 5;
+const directRow = (r) => ({ rowNumber: r.rowNumber, email: r.email, displayName: r.displayName, details: r.details || {}, organizationIds: r.organizationIds || [], accountId: r.accountId || undefined, renamed: r.action === 'UPDATE' && !r.nameUnchanged ? true : undefined });
+
+async function runLimited(items, limit, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i], i);
+    }
+  }));
+  return out;
+}
+
+export async function directImportBatch(invoke, plan, batchIndex, { sleep = defaultSleep, parallel = DIRECT_PARALLEL, retryDelays = [3000, 10000], onProgress } = {}) {
+  const chunk = plan.chunks[batchIndex];
+  const batchNumber = batchIndex + 1;
+  const parts = [];
+  for (let i = 0; i < chunk.length; i += DIRECT_ROWS) parts.push(chunk.slice(i, i + DIRECT_ROWS));
+  let done = 0;
+  const answers = await runLimited(parts, parallel, async (part) => {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        const answer = await invoke('directImportCustomers', { serviceDeskId: plan.serviceDeskId, rows: part.map(directRow) });
+        done += part.length;
+        onProgress?.(done, chunk.length);
+        return answer;
+      } catch (e) {
+        if (attempt >= retryDelays.length) throw e;
+        await sleep(retryDelays[attempt]);
+      }
+    }
+  });
+  const results = answers.flatMap((a) => a?.results || []);
+  const problems = results.filter((r) => r.status !== 'done');
+  const linked = results.length - problems.length;
+  await invoke('recordDirectBatch', {
+    importSessionId: plan.sessionId,
+    batchNumber,
+    totalBatches: plan.chunks.length,
+    count: chunk.length,
+    linked,
+    failures: problems.map((p) => ({ row: p.rowNumber, message: p.error }))
+  });
+  return { id: `direct-${batchNumber}`, batchNumber, submittedRows: chunk.length, linked, problems };
+}
+
 // A saved session's row plan: inline on sessions saved before chunking, otherwise read one chunk per call.
 export async function loadRowPlan(invoke, session) {
   if (Array.isArray(session?.actionableRowNumbers)) return session.actionableRowNumbers.map(Number);
@@ -79,7 +132,7 @@ const text = (v) => (v == null ? '' : typeof v === 'string' ? v : Array.isArray(
 export function describeFailure(failure) {
   if (failure == null || typeof failure !== 'object') return { who: '', why: text(failure) || 'No reason given', extra: '' };
   const p = failure.payload || failure.customerProfile || failure.item || {};
-  const who = text(failure.email || failure.emailAddress || p.email || p.emailAddress || failure.identifier || failure.key || failure.id || '');
+  const who = text(failure.email || failure.emailAddress || p.email || p.emailAddress || failure.identifier || failure.key || failure.id || (failure.row ? `Row ${failure.row}` : ''));
   const why = text(failure.errorMessage || failure.message || failure.errors || failure.error || failure.reason || failure.errorMessages || failure.code)
     || JSON.stringify(failure).slice(0, 300);
   // Everything else Jira sent (e.g. which row or field), so a bare message like "Invalid detail field value" can be traced.

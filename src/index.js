@@ -6,10 +6,14 @@ import { retrying, RATE_LIMITED_MESSAGE } from './http.js';
 import { registerSyncResolvers } from './sync/resolvers.js';
 import { registerImportFinalise, updateSessionBatch } from './import/finalise.js';
 import { exportBackupPage, importBackupBatch } from './backup.js';
+import { registerDirectImport } from './import/direct.js';
+import { customerDetails } from './import/customerDetails.js';
+
+export { customerDetails };
 export { handleIssueEvent } from './sync/events.js';
 
 // Must match package.json (a unit test checks this).
-export const APP_VERSION = '0.7.0';
+export const APP_VERSION = '0.8.0';
 
 // Jira's customer bulk API refuses new tasks while too many earlier ones are unfinished. The browser
 // recognises this message (static/src/importBatch.js) and waits instead of failing the batch.
@@ -503,15 +507,6 @@ secureDefine('validateImport', async ({ payload }) => {
   return { total: rows.length, valid: Math.max(0, rows.length - new Set(errors.map(e => e.row)).size), errors };
 });
 
-// { fieldName: value | [values] } → [{ name, values }], dropping blanks.
-export function customerDetails(details) {
-  if (!details || typeof details !== 'object') return [];
-  return Object.entries(details).slice(0, 50).map(([name, values]) => ({
-    name: String(name).trim(),
-    values: [].concat(values).map((v) => String(v ?? '').trim().slice(0, 255)).filter(Boolean)
-  })).filter((d) => d.name && d.values.length);
-}
-
 secureDefine('bulkUpsertCustomers', async ({ payload }) => {
   const rows = Array.isArray(payload?.rows) ? payload.rows : [];
   if (!rows.length) throw new Error('No rows supplied');
@@ -592,6 +587,7 @@ secureDefine('bulkUpsertCustomers', async ({ payload }) => {
 
 registerSyncResolvers(secureDefine);
 registerImportFinalise(secureDefine, { retention: IMPORT_RECORD_RETENTION });
+registerDirectImport(secureDefine, { retention: IMPORT_RECORD_RETENTION });
 
 // Backup & restore: Jira admins; restoring writes app storage, so it also needs a licence.
 secureDefine('exportBackupPage', async ({ payload }) => exportBackupPage(payload?.cursor || null));

@@ -7,7 +7,7 @@ import { AppHeader, Tabs, Card, Button, Notice, EmptyState, Loading, Lozenge, Fi
 import { organisationNote, lookupOrganisations, attachOrganisationIds, loadAllOrganisations } from './organisations.js';
 import OrgSync from './OrgSync.jsx';
 import BackupRestore from './BackupRestore.jsx';
-import { submitAndFinaliseBatch, problemRowsCsv, recheckNotFound, isTaskLimitError, TASK_LIMIT_WAIT, loadRowPlan, describeFailure, failureReasons } from './importBatch.js';
+import { directImportBatch, submitAndFinaliseBatch, problemRowsCsv, recheckNotFound, isTaskLimitError, TASK_LIMIT_WAIT, loadRowPlan, describeFailure, failureReasons } from './importBatch.js';
 import { importImpact, importSafeguard, typedConfirmationMatches } from './safeguards.js';
 import { parseCsvTable, guessMapping, missingMappingFields, mappingFits, applyMapping, pickSavedMapping, sameMapping, toSaved, fromSaved, MAPPING_FIELDS } from './csv.js';
 import { checkDetails, mergeValidation, detailCount, detailSummary } from './details.js';
@@ -149,6 +149,7 @@ function App() {
     try {
       const [h, sessions] = await Promise.all([invoke('getImportHistory'), invoke('getImportSessions')]);
       const enriched = await Promise.all(h.map(async (x) => {
+        if (!x.taskId) return x; // direct batches record their own outcome
         try { return { ...x, task: await invoke('getTaskStatus', { taskId: x.taskId }) }; }
         catch { return x; }
       }));
@@ -158,10 +159,10 @@ function App() {
   }
 
   // An existing customer whose name already matches: skipped, unless the row sets customer details.
-  function sameNameResult(row, i, orgNote) {
+  function sameNameResult(row, i, orgNote, accountId) {
     const n = detailCount(row);
     if (!n) return { ...row, rowNumber: i + 2, action: 'SKIP', reason: orgNote ? `Customer already matches. ${orgNote}` : 'Customer already matches Jira.' };
-    return { ...row, rowNumber: i + 2, action: 'UPDATE', nameUnchanged: true, reason: `Name already matches; sets ${n === 1 ? '1 customer detail' : `${n} customer details`}. ${orgNote}`.trim() };
+    return { ...row, rowNumber: i + 2, action: 'UPDATE', nameUnchanged: true, accountId, reason: `Name already matches; sets ${n === 1 ? '1 customer detail' : `${n} customer details`}. ${orgNote}`.trim() };
   }
 
   async function buildPreview(parsed, validationResult) {
@@ -188,8 +189,8 @@ function App() {
           results[i] = !exact
             ? { ...row, rowNumber: i + 2, action: 'CREATE', reason: orgNote || 'New customer.' }
             : String(exact.displayName || '').trim().toLowerCase() === String(row.displayName || '').trim().toLowerCase()
-              ? sameNameResult(row, i, orgNote)
-              : { ...row, rowNumber: i + 2, action: 'UPDATE', reason: `Existing Jira customer: ${exact.displayName || exact.emailAddress}. ${orgNote}`.trim() };
+              ? sameNameResult(row, i, orgNote, exact.accountId)
+              : { ...row, rowNumber: i + 2, action: 'UPDATE', accountId: exact.accountId, reason: `Existing Jira customer: ${exact.displayName || exact.emailAddress}. ${orgNote}`.trim() };
         } catch (e) {
           results[i] = { ...row, rowNumber: i + 2, action: 'ERROR', reason: `Jira lookup failed: ${e.message}` };
         }
@@ -244,8 +245,8 @@ function App() {
         const exact = byEmail.get(email);
         const orgNote = organisationNote(row, orgNames);
         if (!exact) return { ...row, rowNumber: i + 2, action: 'CREATE', reason: orgNote || 'New customer.' };
-        if (String(exact.displayName || '').trim().toLowerCase() === String(row.displayName || '').trim().toLowerCase()) return sameNameResult(row, i, orgNote);
-        return { ...row, rowNumber: i + 2, action: 'UPDATE', reason: `Existing Jira customer: ${exact.displayName || exact.emailAddress}. ${orgNote}`.trim() };
+        if (String(exact.displayName || '').trim().toLowerCase() === String(row.displayName || '').trim().toLowerCase()) return sameNameResult(row, i, orgNote, exact.accountId);
+        return { ...row, rowNumber: i + 2, action: 'UPDATE', accountId: exact.accountId, reason: `Existing Jira customer: ${exact.displayName || exact.emailAddress}. ${orgNote}`.trim() };
       });
       setPreview(results);
       setComparisonProgress({ complete: true, customersScanned: byEmail.size, batches });
@@ -437,7 +438,12 @@ function App() {
       });
       try {
         // Re-running a batch is safe: the bulk call reuses its idempotency key and membership adds are idempotent.
-        return await submitAndFinaliseBatch(invoke, plan, batchIndex, { taskId, onSubmitted: (task) => { taskId = task.id; } });
+        // A batch Jira's bulk queue already accepted (an import started before the direct route) is
+        // finished that way; everything else goes the direct route.
+        if (taskId) return await submitAndFinaliseBatch(invoke, plan, batchIndex, { taskId });
+        return await directImportBatch(invoke, plan, batchIndex, {
+          onProgress: (done, total) => setImportProgress((p) => (p?.currentBatch === batchNumber ? { ...p, batchRowsDone: done, batchRows: total } : p))
+        });
       } catch (e) {
         lastError = e;
         if (!errors.includes(e.message)) errors.push(e.message);
@@ -781,7 +787,7 @@ function App() {
           {importProgress.state === 'recovered' && <p><strong>This exact CSV matches a saved interrupted import.</strong> {importProgress.completedRows.toLocaleString()} of {plural(importProgress.totalRows, 'row')} were already submitted. Resume continues from batch {importProgress.currentBatch} of {importProgress.totalBatches} using the original row plan. Organisations are only checked or created when you click Resume.</p>}
           {importProgress.state !== 'preparing' && importProgress.state !== 'recovered' && <p><strong>{importProgress.completedRows.toLocaleString()} of {plural(importProgress.totalRows, 'row')} submitted</strong> across {importProgress.completedBatches} of {plural(importProgress.totalBatches, 'batch', 'batches')}.</p>}
           {importProgress.state === 'rechecking' && <Loading text={`Waiting for Jira to finish creating ${plural(importProgress.waiting, 'new customer')} before adding them to the project and organisations (check ${importProgress.attempt} of ${importProgress.attempts})…`}/>}
-          {importProgress.state === 'running' && <Loading text={`Processing batch ${importProgress.currentBatch} of ${importProgress.totalBatches}${importProgress.attempt > 1 ? `, retry ${importProgress.attempt} of 3` : ''}…`}/>}
+          {importProgress.state === 'running' && <Loading text={`Processing batch ${importProgress.currentBatch} of ${importProgress.totalBatches}${importProgress.batchRows ? ` (${importProgress.batchRowsDone} of ${importProgress.batchRows} customers)` : ''}${importProgress.attempt > 1 ? `, retry ${importProgress.attempt} of 3` : ''}…`}/>}
           {importProgress.state === 'waiting' && <Loading text={`Jira is still working through earlier import tasks and isn't accepting new ones yet. Batch ${importProgress.currentBatch} will be sent when it does (checked every minute, ${importProgress.waited} of ${importProgress.maxWaits}). Keep this page open.`}/>}
           {importProgress.state === 'failed' && <Notice kind="error" title={`Batch ${importProgress.currentBatch} wasn't accepted`}>
             <p>{isTaskLimitError(importProgress.error) ? 'Jira still had too many unfinished import tasks after an hour of waiting. Try Resume later; Jira finishes them in the background.' : `Jira's reply: ${importProgress.error || 'no details'}`}</p>

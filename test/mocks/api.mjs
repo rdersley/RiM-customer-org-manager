@@ -166,6 +166,27 @@ async function requestJira(as, path, options = {}) {
     const values = site.organizations.slice(start, start + limit);
     return json({ start, limit, size: values.length, values, isLastPage: start + limit >= site.organizations.length });
   }
+  // Direct route: create a customer (400 if the email already has an account) and set one detail.
+  if (path === '/rest/servicedeskapi/customer' && method === 'POST') {
+    const { email, displayName } = JSON.parse(options.body);
+    const key = email.toLowerCase();
+    if (key.startsWith('reject-')) return json({ errorMessage: 'The email address is not valid.' }, 400);
+    if (site.accounts.has(key)) return json({ errorMessage: 'An account already exists for this email' }, 400);
+    const account = { accountId: `qm:${site.accounts.size + 1}`, displayName, emailAddress: email, accountType: 'customer', searchesUntilIndexed: site.searchLag };
+    site.accounts.set(key, account);
+    return json({ accountId: account.accountId, displayName, emailAddress: email }, 201);
+  }
+  const setDetail = path.match(/^\/jsm\/csm\/api\/v1\/customer\/([^/]+)\/details\?fieldName=(.+)$/);
+  if (setDetail && method === 'PUT') {
+    const accountId = decodeURIComponent(setDetail[1]);
+    const field = decodeURIComponent(setDetail[2]);
+    const { values } = JSON.parse(options.body);
+    if (field === 'PhoneNumber' && values.some((v) => !/^\+/.test(v))) return json({ errorMessage: 'Invalid detail field value' }, 400);
+    const account = [...site.accounts.values()].find((a) => a.accountId === accountId);
+    if (!account) return json({ errorMessage: 'Customer not found' }, 404);
+    account.details = { ...(account.details || {}), [field]: values };
+    return json({ name: field, values });
+  }
   if (path === '/jsm/csm/api/v1/customer/details' && method === 'GET') {
     return site.detailFields ? json({ results: site.detailFields }) : json({ message: 'Not found' }, 404);
   }
@@ -179,7 +200,7 @@ async function requestJira(as, path, options = {}) {
       const email = payload.email.toLowerCase();
       if (email.startsWith('reject-')) continue; // simulates a row Jira refuses
       const existing = site.accounts.get(email);
-      site.accounts.set(email, { accountId: existing?.accountId || `qm:${site.accounts.size + 1}`, displayName: payload.displayName, emailAddress: payload.email, accountType: 'customer', searchesUntilIndexed: existing ? 0 : site.searchLag });
+      site.accounts.set(email, { ...(existing?.details ? { details: existing.details } : {}), accountId: existing?.accountId || `qm:${site.accounts.size + 1}`, displayName: payload.displayName, emailAddress: payload.email, accountType: 'customer', searchesUntilIndexed: existing ? 0 : site.searchLag });
     }
     return json({ id: `task-${site.bulkRequests.length}`, statusUrl: `/tasks/task-${site.bulkRequests.length}` }, 202);
   }

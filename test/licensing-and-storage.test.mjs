@@ -5,6 +5,7 @@ import { site, resetSite } from './mocks/api.mjs';
 import { store, setOptions, resetStore } from './mocks/kvs.mjs';
 import { handler, APP_VERSION, IMPORT_RECORD_RETENTION } from '../src/index.js';
 import { resolverLicenseAllows } from '../src/license.js';
+import { loadRowPlan } from '../static/src/importBatch.js';
 
 const DEV = { environmentType: 'DEVELOPMENT' };
 const PROD_ACTIVE = { environmentType: 'PRODUCTION', license: { active: true } };
@@ -49,7 +50,12 @@ test('a 50,000-row import plan is stored in chunks within the KVS value limit an
 
   const recovered = await call('findRecoverableImportSession', { fingerprint, serviceDeskId: '1' });
   assert.equal(recovered.id, 'big');
-  assert.deepEqual(recovered.actionableRowNumbers, rows);
+  assert.equal(recovered.actionableRowNumbers, undefined, 'the plan is read in chunks, not in one reply');
+  const invoked = [];
+  const invoke = (name, payload) => { invoked.push(name); return call(name, payload); };
+  assert.deepEqual(await loadRowPlan(invoke, recovered), rows);
+  assert.deepEqual(invoked, Array(10).fill('getImportRowPlanChunk'));
+  await assert.rejects(call('getImportRowPlanChunk', { sessionId: 'big', index: 10 }), /out of range/);
 });
 
 test('session list omits row plans; recovery refuses an incomplete plan', async () => {
@@ -60,14 +66,15 @@ test('session list omits row plans; recovery refuses an incomplete plan', async 
   assert.ok(!('import-session-rows:s1:0' === listed.id));
 
   store.delete('import-session-rows:s1:0');
-  await assert.rejects(call('findRecoverableImportSession', { fingerprint, serviceDeskId: '1' }), /row plan is incomplete/);
+  const recovered = await call('findRecoverableImportSession', { fingerprint, serviceDeskId: '1' });
+  await assert.rejects(loadRowPlan(call, recovered), /row plan is incomplete/);
 });
 
 test('sessions saved before chunking (inline row numbers) still recover', async () => {
   store.set('import-session:old', { id: 'old', fingerprint, serviceDeskId: '1', actionableRowNumbers: [5, 6], status: 'IN_PROGRESS' });
   store.set(`import-recovery:1:${fingerprint}`, { sessionId: 'old' });
   const recovered = await call('findRecoverableImportSession', { fingerprint, serviceDeskId: '1' });
-  assert.deepEqual(recovered.actionableRowNumbers, [5, 6]);
+  assert.deepEqual(await loadRowPlan(call, recovered), [5, 6]);
 });
 
 test('a session is submitted only once every batch is finalised, then the recovery pointer is cleared', async () => {

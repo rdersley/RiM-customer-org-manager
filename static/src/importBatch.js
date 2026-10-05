@@ -55,6 +55,18 @@ export async function submitAndFinaliseBatch(invoke, plan, batchIndex, options =
   };
 }
 
+// A saved session's row plan: inline on sessions saved before chunking, otherwise read one chunk per call.
+export async function loadRowPlan(invoke, session) {
+  if (Array.isArray(session?.actionableRowNumbers)) return session.actionableRowNumbers.map(Number);
+  const rows = [];
+  for (let i = 0; i < Number(session?.rowPlanChunks || 0); i += 1) {
+    const chunk = await invoke('getImportRowPlanChunk', { sessionId: session.id, index: i });
+    if (!Array.isArray(chunk)) throw new Error(`The saved recovery row plan is incomplete (part ${i + 1} of ${session.rowPlanChunks} is missing). Start a new import rather than guessing.`);
+    rows.push(...chunk.map(Number));
+  }
+  return rows;
+}
+
 export const isTaskLimitError = (error) => /maximum number of tasks/i.test(String(error?.message || error || ''));
 
 // How long the import waits for Jira to work through earlier tasks before it pauses: every minute, for up to an hour.

@@ -7,7 +7,7 @@ import { AppHeader, Tabs, Card, Button, Notice, EmptyState, Loading, Lozenge, Fi
 import { organisationNote, lookupOrganisations, attachOrganisationIds, loadAllOrganisations } from './organisations.js';
 import OrgSync from './OrgSync.jsx';
 import BackupRestore from './BackupRestore.jsx';
-import { submitAndFinaliseBatch, problemRowsCsv, recheckNotFound, isTaskLimitError, TASK_LIMIT_WAIT } from './importBatch.js';
+import { submitAndFinaliseBatch, problemRowsCsv, recheckNotFound, isTaskLimitError, TASK_LIMIT_WAIT, loadRowPlan } from './importBatch.js';
 import { importImpact, importSafeguard, typedConfirmationMatches } from './safeguards.js';
 import { parseCsvTable, guessMapping, missingMappingFields, mappingFits, applyMapping, pickSavedMapping, sameMapping, toSaved, fromSaved, MAPPING_FIELDS } from './csv.js';
 import { checkDetails, mergeValidation, detailCount, detailSummary } from './details.js';
@@ -264,9 +264,9 @@ function App() {
       throw new Error(`This file has an interrupted import that used different columns (Email: ${m.email}, Full name: ${name}${m.organisation ? `, Organisation: ${m.organisation}` : ''}${details}). Choose those columns to resume it.`);
     }
 
-    const rowNumbers = Array.isArray(session.actionableRowNumbers) ? session.actionableRowNumbers.map(Number) : [];
+    const rowNumbers = await loadRowPlan(invoke, session);
     if (!rowNumbers.length || Number(session.totalRows) !== rowNumbers.length) {
-      throw new Error('A saved import session matched this file, but its recovery row plan is incomplete. Start a new import rather than guessing.');
+      throw new Error(`A saved import session matched this file, but its recovery row plan is incomplete (${rowNumbers.length.toLocaleString()} of ${Number(session.totalRows || 0).toLocaleString()} rows, ${Number(session.rowPlanChunks || 0)} parts). Start a new import rather than guessing.`);
     }
 
     const recoveryRows = rowNumbers.map((rowNumber) => {

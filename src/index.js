@@ -346,15 +346,10 @@ async function saveRowPlan(sessionId, rowNumbers) {
   return chunks;
 }
 
-async function loadRowPlan(session) {
-  if (Array.isArray(session?.actionableRowNumbers)) return session.actionableRowNumbers; // sessions saved before chunking
-  const rows = [];
-  for (let i = 0; i < Number(session?.rowPlanChunks || 0); i += 1) {
-    const chunk = await kvs.get(`import-session-rows:${session.id}:${i}`);
-    if (!Array.isArray(chunk)) throw new Error('The saved recovery row plan is incomplete. Start a new import rather than guessing.');
-    rows.push(...chunk);
-  }
-  return rows;
+async function loadRowPlanChunk(sessionId, index) {
+  const chunk = await kvs.get(`import-session-rows:${sessionId}:${index}`);
+  if (!Array.isArray(chunk)) throw new Error('The saved recovery row plan is incomplete. Start a new import rather than guessing.');
+  return chunk;
 }
 
 // Lists sessions without their row plans (the Import History tab only needs the summary).
@@ -374,6 +369,9 @@ secureDefine('getImportSessionSummaries', async () => {
   }).sort((a,b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
 });
 
+// Returns the session without its chunked row plan: a 16,000-row plan in one reply didn't reach the
+// browser intact on a live site, so the browser reads it with getImportRowPlanChunk, one chunk at a time.
+// Sessions saved before chunking keep their (small) inline plan.
 secureDefine('findRecoverableImportSession', async ({ payload }) => {
   const fingerprint = String(payload?.fingerprint || '').trim().toLowerCase();
   const serviceDeskId = String(payload?.serviceDeskId || '').trim();
@@ -384,7 +382,17 @@ secureDefine('findRecoverableImportSession', async ({ payload }) => {
   if (!pointer?.sessionId) return null;
   const session = await kvs.get(`import-session:${pointer.sessionId}`);
   if (!session || session.status === 'SUBMITTED' || session.fingerprint !== fingerprint || String(session.serviceDeskId) !== serviceDeskId) return null;
-  return { ...session, actionableRowNumbers: await loadRowPlan(session) };
+  return session;
+});
+
+secureDefine('getImportRowPlanChunk', async ({ payload }) => {
+  const sessionId = String(payload?.sessionId || '').trim();
+  const index = Number(payload?.index);
+  if (!sessionId) throw new Error('sessionId is required');
+  const session = await kvs.get(`import-session:${sessionId}`);
+  if (!session) throw new Error('Import recovery session was not found.');
+  if (!Number.isInteger(index) || index < 0 || index >= Number(session.rowPlanChunks || 0)) throw new Error('Row plan chunk is out of range');
+  return loadRowPlanChunk(sessionId, index);
 });
 
 secureDefine('startImportSession', async ({ payload }) => {

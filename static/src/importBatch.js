@@ -67,6 +67,28 @@ export async function loadRowPlan(invoke, session) {
   return rows;
 }
 
+// One entry from a Jira bulk task's `failures`: who it was about and why. Jira's shape isn't documented,
+// so the common fields are tried and anything unrecognised is shown as the raw entry.
+const text = (v) => (v == null ? '' : typeof v === 'string' ? v : Array.isArray(v) ? v.map(text).filter(Boolean).join('; ') : typeof v === 'object' ? (v.message || v.errorMessage || v.reason || v.code ? text(v.message || v.errorMessage || v.reason || v.code) : JSON.stringify(v)) : String(v));
+export function describeFailure(failure) {
+  if (failure == null || typeof failure !== 'object') return { who: '', why: text(failure) || 'No reason given' };
+  const p = failure.payload || failure.customerProfile || failure.item || {};
+  const who = text(failure.email || failure.emailAddress || p.email || p.emailAddress || failure.identifier || failure.key || failure.id || '');
+  const why = text(failure.errorMessage || failure.message || failure.errors || failure.error || failure.reason || failure.errorMessages || failure.code)
+    || JSON.stringify(failure).slice(0, 300);
+  return { who, why };
+}
+
+// Failure reasons across tasks, most common first: [{ why, count }].
+export function failureReasons(tasks) {
+  const counts = new Map();
+  for (const task of tasks || []) for (const f of task?.failures || []) {
+    const { why } = describeFailure(f);
+    counts.set(why, (counts.get(why) || 0) + 1);
+  }
+  return [...counts].map(([why, count]) => ({ why, count })).sort((a, b) => b.count - a.count);
+}
+
 export const isTaskLimitError = (error) => /maximum number of tasks/i.test(String(error?.message || error || ''));
 
 // How long the import waits for Jira to work through earlier tasks before it pauses: every minute, for up to an hour.

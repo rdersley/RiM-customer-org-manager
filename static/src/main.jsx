@@ -7,7 +7,7 @@ import { AppHeader, Tabs, Card, Button, Notice, EmptyState, Loading, Lozenge, Fi
 import { organisationNote, lookupOrganisations, attachOrganisationIds, loadAllOrganisations } from './organisations.js';
 import OrgSync from './OrgSync.jsx';
 import BackupRestore from './BackupRestore.jsx';
-import { submitAndFinaliseBatch, problemRowsCsv, recheckNotFound, isTaskLimitError, TASK_LIMIT_WAIT, loadRowPlan } from './importBatch.js';
+import { submitAndFinaliseBatch, problemRowsCsv, recheckNotFound, isTaskLimitError, TASK_LIMIT_WAIT, loadRowPlan, describeFailure, failureReasons } from './importBatch.js';
 import { importImpact, importSafeguard, typedConfirmationMatches } from './safeguards.js';
 import { parseCsvTable, guessMapping, missingMappingFields, mappingFits, applyMapping, pickSavedMapping, sameMapping, toSaved, fromSaved, MAPPING_FIELDS } from './csv.js';
 import { checkDetails, mergeValidation, detailCount, detailSummary } from './details.js';
@@ -76,6 +76,7 @@ function App() {
   const [resumePlan, setResumePlan] = useState(null);
   const [recoveryNote, setRecoveryNote] = useState('');
   const [history, setHistory] = useState([]);
+  const [openFailures, setOpenFailures] = useState(null);
   const [importSessions, setImportSessions] = useState([]);
   const [csvInfo, setCsvInfo] = useState(null);
   // Column mapping: the parsed file, the columns chosen for each field, and the mapping the preview used.
@@ -820,7 +821,11 @@ function App() {
           {importSessions.length ? <div className="nq-table-wrap"><table className="nq-table"><thead><tr><th>Started</th><th>File</th><th>Progress</th><th>Status</th><th>Session</th></tr></thead><tbody>{importSessions.map((s) => <tr key={s.id}><td>{new Date(s.createdAt).toLocaleString()}</td><td>{s.fileName || '—'}</td><td>{Number(s.submittedRows || 0).toLocaleString()} / {Number(s.totalRows || 0).toLocaleString()} rows · {Number(s.completedBatches || 0)} / {Number(s.totalBatches || 0)} batches{s.linkedRows != null ? ` · ${Number(s.linkedRows).toLocaleString()} added${s.problemRows ? `, ${Number(s.problemRows).toLocaleString()} to fix` : ''}` : ''}</td><td><Lozenge kind={statusKind(s.status)}>{s.status || 'Unknown'}</Lozenge></td><td className="nq-muted">{s.id}</td></tr>)}</tbody></table></div>
             : <EmptyState title="No import sessions yet" compact>Sessions appear here once you run an import.</EmptyState>}
           <h3 className="nq-card__title">Bulk task history</h3>
-          {history.length ? <div className="nq-table-wrap"><table className="nq-table"><thead><tr><th>Submitted</th><th>Batch</th><th>Rows</th><th>Status</th><th>Failures</th><th>Task</th></tr></thead><tbody>{history.map((h) => <tr key={h.id}><td>{new Date(h.createdAt).toLocaleString()}</td><td>{h.batchNumber && h.totalBatches ? `${h.batchNumber}/${h.totalBatches}` : '—'}</td><td>{h.count}</td><td><Lozenge kind={statusKind(h.task?.status)}>{h.task?.status || 'Unknown'}</Lozenge></td><td>{h.task?.failures?.length || 0}</td><td className="nq-muted">{h.taskId}</td></tr>)}</tbody></table></div>
+          {(() => {
+            const reasons = failureReasons(history.map((h) => h.task));
+            return reasons.length ? <Notice kind="warning" title={`Why Jira rejected rows (${reasons.reduce((n, r) => n + r.count, 0).toLocaleString()} across the tasks below)`}><ul>{reasons.slice(0, 10).map((r) => <li key={r.why}><strong>{r.count.toLocaleString()}</strong> × {r.why}</li>)}</ul><p>Click a task's failure count to see which customers.</p></Notice> : null;
+          })()}
+          {history.length ? <div className="nq-table-wrap"><table className="nq-table"><thead><tr><th>Submitted</th><th>Batch</th><th>Rows</th><th>Status</th><th>Failures</th><th>Task</th></tr></thead><tbody>{history.flatMap((h) => [<tr key={h.id}><td>{new Date(h.createdAt).toLocaleString()}</td><td>{h.batchNumber && h.totalBatches ? `${h.batchNumber}/${h.totalBatches}` : '—'}</td><td>{h.count}</td><td><Lozenge kind={statusKind(h.task?.status)}>{h.task?.status || 'Unknown'}</Lozenge></td><td>{h.task?.failures?.length ? <Button appearance="subtle" onClick={() => setOpenFailures(openFailures === h.id ? null : h.id)}>{h.task.failures.length} {openFailures === h.id ? '▴' : '▾'}</Button> : 0}</td><td className="nq-muted">{h.taskId}</td></tr>, openFailures === h.id && <tr key={`${h.id}-failures`}><td colSpan={6}><ul>{h.task.failures.map((f, i) => { const d = describeFailure(f); return <li key={i}>{d.who ? <strong>{d.who}: </strong> : null}{d.why}</li>; })}</ul></td></tr>])}</tbody></table></div>
             : <EmptyState title="No bulk tasks yet" compact>Each import batch is recorded here with its Jira task status.</EmptyState>}
         </div>
       </Card>}

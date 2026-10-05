@@ -98,7 +98,7 @@ test('finalise validates input', async () => {
 });
 
 // ---- the browser side (static/src/importBatch.js) against the real resolvers ----
-import { waitForTask, submitAndFinaliseBatch, problemRowsCsv } from '../static/src/importBatch.js';
+import { waitForTask, submitAndFinaliseBatch, problemRowsCsv, describeFailure, failureReasons } from '../static/src/importBatch.js';
 import { attachOrganisationIds } from '../static/src/organisations.js';
 
 const invoke = (name, payload) => call(name, payload);
@@ -162,4 +162,11 @@ test('new accounts that Jira search has not indexed yet are found by the end-of-
   const session = store.get('import-session:lag');
   assert.deepEqual([session.linkedRows, session.problemRows], [2, 1], 'retries add to the batch counts');
   assert.ok(progress.length >= 2 && progress.at(-1) === 1);
+});
+
+test('task failures are described from common Jira shapes, falling back to the raw entry', () => {
+  assert.deepEqual(describeFailure({ payload: { email: 'a@x.test' }, errors: [{ message: 'Invalid option for Base' }] }), { who: 'a@x.test', why: 'Invalid option for Base' });
+  assert.deepEqual(describeFailure({ email: 'b@x.test', errorMessage: 'Email is not valid' }), { who: 'b@x.test', why: 'Email is not valid' });
+  assert.equal(describeFailure({ odd: 1 }).why, '{"odd":1}');
+  assert.deepEqual(failureReasons([{ failures: [{ message: 'X' }, { message: 'Y' }, { message: 'X' }] }, null, { failures: [] }]), [{ why: 'X', count: 2 }, { why: 'Y', count: 1 }]);
 });

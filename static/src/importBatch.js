@@ -3,8 +3,9 @@
 // against the real resolvers.
 
 // Jira reports FAILED for bulk tasks that still created or updated the accounts (seen on a live site),
-// so any terminal status just means "finished"; finalise decides what actually worked.
-const TERMINAL = new Set(['COMPLETE', 'COMPLETED', 'SUCCESS', 'DONE', 'FAILED', 'CANCELLED']);
+// so any terminal status just means "finished"; finalise decides what actually worked. A live site reports
+// FINISHED; without it here every batch waited the full 10 minutes.
+const TERMINAL = new Set(['FINISHED', 'COMPLETE', 'COMPLETED', 'SUCCESS', 'DONE', 'FAILED', 'CANCELLED']);
 const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Waits up to 10 minutes. Moving on while a task is still running would pile up unfinished tasks, and

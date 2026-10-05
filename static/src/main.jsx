@@ -621,7 +621,7 @@ function App() {
   }, [preview]);
 
   const actionKind = { CREATE: 'success', UPDATE: 'info', SKIP: 'neutral', ERROR: 'danger', PENDING: 'warning' };
-  const statusKind = (status) => ({ SUBMITTED: 'success', COMPLETE: 'success', RUNNING: 'info', FAILED: 'danger', PAUSED: 'warning' }[String(status || '').toUpperCase()] || 'neutral');
+  const statusKind = (status) => ({ SUBMITTED: 'success', COMPLETE: 'success', FINISHED: 'success', RUNNING: 'info', IN_PROGRESS: 'info', FAILED: 'danger', PAUSED: 'warning' }[String(status || '').toUpperCase()] || 'neutral');
   const plural = (n, one, many = `${one}s`) => `${Number(n).toLocaleString()} ${n === 1 ? one : many}`;
   const changeCount = previewSummary.CREATE + previewSummary.UPDATE;
   const previewHasDetails = useMemo(() => preview.some((r) => detailCount(r) > 0), [preview]);

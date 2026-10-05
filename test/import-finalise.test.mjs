@@ -112,6 +112,13 @@ test('waitForTask returns on a terminal status (including FAILED) and times out 
   assert.equal(calls, 6);
 });
 
+test('waitForTask treats FINISHED (what a live site reports) as done straight away', async () => {
+  let calls = 0;
+  const finished = async () => { calls += 1; return { status: 'FINISHED' }; };
+  assert.equal(await waitForTask(finished, 't', fastClock()), 'FINISHED');
+  assert.equal(calls, 1);
+});
+
 test('a two-batch import from the browser side ends with everyone in the project and their organisation', async () => {
   resetSite(3); // orgs 1..3 exist
   const rows = Array.from({ length: 150 }, (_, i) => ({ rowNumber: i + 2, email: `p${i}@x.test`, displayName: `P${i}`, organisation: i % 2 ? 'Org 2' : 'Brand New' }));

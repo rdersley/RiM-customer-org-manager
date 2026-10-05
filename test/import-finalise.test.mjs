@@ -171,3 +171,17 @@ test('task failures are described from common Jira shapes, falling back to the r
   assert.equal(describeFailure({ odd: 1 }).why, '{"odd":1}');
   assert.deepEqual(failureReasons([{ failures: [{ message: 'X' }, { message: 'Y' }, { message: 'X' }] }, null, { failures: [] }]), [{ why: 'X', count: 2 }, { why: 'Y', count: 1 }]);
 });
+
+test('a batch Jira already accepted is not sent again: the retry waits for its task and finalises', async () => {
+  resetSite(1);
+  const rows = Array.from({ length: 3 }, (_, i) => ({ rowNumber: i + 2, email: `q${i}@x.test`, displayName: `Q${i}`, organizationIds: [] }));
+  await call('startImportSession', { id: 'again', fingerprint, serviceDeskId: '1', actionableRowNumbers: rows.map((r) => r.rowNumber), totalRows: 3, totalBatches: 1 });
+  const plan = { sessionId: 'again', serviceDeskId: '1', chunks: [rows] };
+  let accepted;
+  await submitAndFinaliseBatch(invoke, plan, 0, { ...fastClock(), onSubmitted: (t) => { accepted = t.id; } });
+  const sent = site.bulkRequests.length;
+  const retried = await submitAndFinaliseBatch(invoke, plan, 0, { ...fastClock(), taskId: accepted });
+  assert.equal(site.bulkRequests.length, sent, 'no second bulk request');
+  assert.equal(retried.id, accepted);
+  assert.equal(retried.linked, 3);
+});

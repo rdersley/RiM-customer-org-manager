@@ -288,7 +288,9 @@ function App() {
     while (nextBatchIndex < chunks.length && completed.has(nextBatchIndex + 1)) nextBatchIndex += 1;
     if (nextBatchIndex >= chunks.length) return;
     const tasks = (session.batches || []).filter((b) => Number(b.batchNumber) <= nextBatchIndex).map((b) => ({ ...b, submittedRows: Number(b.count || 0), problems: [] }));
-    const plan = { sessionId: session.id, serviceDeskId: String(session.serviceDeskId), totalRows: recoveryRows.length, chunks, nextBatchIndex, tasks, recovered: true, organisationsPending: true };
+    // Batches Jira accepted but that weren't finalised: resume waits for those tasks rather than resending.
+    const pendingTaskIds = Object.fromEntries((session.batches || []).filter((b) => b.finalised === false && b.taskId).map((b) => [Number(b.batchNumber), b.taskId]));
+    const plan = { sessionId: session.id, serviceDeskId: String(session.serviceDeskId), totalRows: recoveryRows.length, chunks, nextBatchIndex, tasks, pendingTaskIds, recovered: true, organisationsPending: true };
     setResumePlan(plan);
     setImportProgress({
       state: 'recovered',
@@ -418,7 +420,10 @@ function App() {
     const chunk = plan.chunks[batchIndex];
     const batchNumber = batchIndex + 1;
     let lastError;
+    const errors = [];
     let limitWaits = 0;
+    // Once Jira has accepted this batch, retries reuse its task instead of sending it again.
+    let taskId = plan.pendingTaskIds?.[batchNumber] || null;
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       setImportProgress({
         state: 'running',
@@ -432,9 +437,10 @@ function App() {
       });
       try {
         // Re-running a batch is safe: the bulk call reuses its idempotency key and membership adds are idempotent.
-        return await submitAndFinaliseBatch(invoke, plan, batchIndex);
+        return await submitAndFinaliseBatch(invoke, plan, batchIndex, { taskId, onSubmitted: (task) => { taskId = task.id; } });
       } catch (e) {
         lastError = e;
+        if (!errors.includes(e.message)) errors.push(e.message);
         // Jira is still working through earlier tasks: wait a minute and try the same batch again. This
         // doesn't use up an attempt; after an hour the import pauses and can be resumed later.
         if (isTaskLimitError(e) && limitWaits < TASK_LIMIT_WAIT.maxWaits) {
@@ -458,7 +464,7 @@ function App() {
       }
     }
     const completedRows = existingTasks.reduce((sum, task) => sum + Number(task.submittedRows || 0), 0);
-    const failedPlan = { ...plan, nextBatchIndex: batchIndex, tasks: existingTasks };
+    const failedPlan = { ...plan, nextBatchIndex: batchIndex, tasks: existingTasks, pendingTaskIds: { ...(plan.pendingTaskIds || {}), ...(taskId ? { [batchNumber]: taskId } : {}) } };
     setResumePlan(failedPlan);
     setImportProgress({
       state: 'failed',
@@ -469,9 +475,9 @@ function App() {
       completedRows,
       currentBatch: batchNumber,
       attempt: 3,
-      error: lastError?.message || 'Batch submission failed'
+      error: errors.join(' Then: ') || 'Batch submission failed'
     });
-    throw new Error(`Batch ${batchNumber} of ${plan.chunks.length} failed after 3 attempts. ${lastError?.message || ''}`.trim());
+    throw new Error(`Batch ${batchNumber} of ${plan.chunks.length} failed after 3 attempts. ${errors.join(' Then: ')}`.trim());
   }
 
   async function submitPlan(plan, startBatchIndex = 0, initialTasks = []) {

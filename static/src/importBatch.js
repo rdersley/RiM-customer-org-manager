@@ -29,15 +29,21 @@ export async function submitAndFinaliseBatch(invoke, plan, batchIndex, options =
   const chunk = plan.chunks[batchIndex];
   const batchNumber = batchIndex + 1;
   const totalBatches = plan.chunks.length;
-  const task = await invoke('bulkUpsertCustomers', {
-    rows: chunk,
-    importSessionId: plan.sessionId,
-    batchNumber,
-    totalBatches,
-    idempotencyKey: `${plan.sessionId}-batch-${batchNumber}`,
-    rowStart: chunk[0]?.rowNumber || null,
-    rowEnd: chunk[chunk.length - 1]?.rowNumber || null
-  });
+  // A batch Jira already accepted (an earlier attempt, or a resumed import) isn't sent again: Jira refuses
+  // a reused idempotency key while that task exists ("can only be retried with the same request data").
+  // The retry just waits for that task and finalises.
+  const task = options.taskId
+    ? { id: options.taskId, importSessionId: plan.sessionId, batchNumber, totalBatches }
+    : await invoke('bulkUpsertCustomers', {
+      rows: chunk,
+      importSessionId: plan.sessionId,
+      batchNumber,
+      totalBatches,
+      idempotencyKey: `${plan.sessionId}-batch-${batchNumber}`,
+      rowStart: chunk[0]?.rowNumber || null,
+      rowEnd: chunk[chunk.length - 1]?.rowNumber || null
+    });
+  options.onSubmitted?.(task);
   const taskStatus = await waitForTask(invoke, task.id, options);
   const finalised = await invoke('finaliseImportBatch', {
     rows: chunk.map((r) => ({ rowNumber: r.rowNumber, email: r.email, organizationIds: r.organizationIds || [] })),

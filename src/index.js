@@ -369,20 +369,55 @@ secureDefine('getImportSessionSummaries', async () => {
   }).sort((a,b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
 });
 
-// Returns the session without its chunked row plan: a 16,000-row plan in one reply didn't reach the
-// browser intact on a live site, so the browser reads it with getImportRowPlanChunk, one chunk at a time.
-// Sessions saved before chunking keep their (small) inline plan.
+// Every saved import session, following the query cursor (the Import History list only shows the first 50).
+async function allImportSessions() {
+  const sessions = [];
+  let cursor;
+  for (let page = 0; page < 20; page += 1) {
+    let query = kvs.query().where('key', WhereConditions.beginsWith('import-session:')).limit(100);
+    if (cursor) query = query.cursor(cursor);
+    const result = await query.getMany();
+    sessions.push(...(result.results || []).map((r) => r.value).filter(Boolean));
+    cursor = result.nextCursor;
+    if (!cursor) break;
+  }
+  return sessions;
+}
+
+const resumable = (session, fingerprint, serviceDeskId) => session && session.status !== 'SUBMITTED'
+  && session.fingerprint === fingerprint && String(session.serviceDeskId) === serviceDeskId;
+
+// Returns the session without its chunked row plan (the browser reads it with getImportRowPlanChunk).
+// If the recovery pointer doesn't lead to a resumable session, every saved session is checked, and when
+// none matches the reply says why ({ id: null, reason }) instead of an empty answer, so the browser can
+// tell "nothing to resume" apart from a session.
 secureDefine('findRecoverableImportSession', async ({ payload }) => {
   const fingerprint = String(payload?.fingerprint || '').trim().toLowerCase();
   const serviceDeskId = String(payload?.serviceDeskId || '').trim();
+  const fileName = String(payload?.fileName || '').trim();
   if (!/^[a-f0-9]{64}$/.test(fingerprint)) throw new Error('A SHA-256 import fingerprint is required');
   if (!serviceDeskId) throw new Error('serviceDeskId is required');
 
-  const pointer = await kvs.get(`import-recovery:${serviceDeskId}:${fingerprint}`);
-  if (!pointer?.sessionId) return null;
-  const session = await kvs.get(`import-session:${pointer.sessionId}`);
-  if (!session || session.status === 'SUBMITTED' || session.fingerprint !== fingerprint || String(session.serviceDeskId) !== serviceDeskId) return null;
-  return session;
+  const pointerKey = `import-recovery:${serviceDeskId}:${fingerprint}`;
+  const pointer = await kvs.get(pointerKey);
+  if (pointer?.sessionId) {
+    const session = await kvs.get(`import-session:${pointer.sessionId}`);
+    if (resumable(session, fingerprint, serviceDeskId)) return session;
+  }
+
+  const unfinished = (await allImportSessions()).filter((s) => s.status !== 'SUBMITTED')
+    .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+  const match = unfinished.find((s) => resumable(s, fingerprint, serviceDeskId));
+  if (match) {
+    await kvs.set(pointerKey, { sessionId: match.id, updatedAt: new Date().toISOString() }, IMPORT_RECORD_RETENTION);
+    return match;
+  }
+  const started = (s) => new Date(s.createdAt).toISOString().slice(0, 16).replace('T', ' ');
+  const otherProject = unfinished.find((s) => s.fingerprint === fingerprint);
+  if (otherProject) return { id: null, reason: `This file has an unfinished import (started ${started(otherProject)} UTC) for another service project (id ${otherProject.serviceDeskId}). Select that project, then choose the file again to resume it.` };
+  const sameName = fileName && unfinished.find((s) => String(s.fileName || '').toLowerCase() === fileName.toLowerCase());
+  if (sameName) return { id: null, reason: `An unfinished import of ${sameName.fileName} (started ${started(sameName)} UTC) exists, but this file's contents are different, so it can't be resumed. It may have been saved again since (for example in Excel). Choose the original file to resume, or start a new import.` };
+  return { id: null, reason: '' };
 });
 
 secureDefine('getImportRowPlanChunk', async ({ payload }) => {

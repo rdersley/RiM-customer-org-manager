@@ -74,6 +74,7 @@ function App() {
   const [rechecking, setRechecking] = useState(false);
   const [importProgress, setImportProgress] = useState(null);
   const [resumePlan, setResumePlan] = useState(null);
+  const [recoveryNote, setRecoveryNote] = useState('');
   const [history, setHistory] = useState([]);
   const [importSessions, setImportSessions] = useState([]);
   const [csvInfo, setCsvInfo] = useState(null);
@@ -256,7 +257,7 @@ function App() {
   }
 
   async function restoreRecoveryForFile(parsedRows, session, usedMapping) {
-    if (!session) return;
+    if (!session?.id) return;
     if (session.mapping && !sameMapping(fromSaved(session.mapping), usedMapping)) {
       const m = fromSaved(session.mapping);
       const name = m.displayName || [m.firstName, m.lastName].filter(Boolean).join(' + ');
@@ -308,6 +309,7 @@ function App() {
     setImportProgress(null);
     setResumePlan(null);
     setImportStatus(null);
+    setRecoveryNote('');
     setRows([]);
     setPreview([]);
     setValidation(null);
@@ -329,10 +331,11 @@ function App() {
       const serviceDeskId = await ensureDeskId();
       const [saved, recoverable, detail] = await Promise.all([
         invoke('getImportMappings').catch(() => []),
-        invoke('findRecoverableImportSession', { fingerprint, serviceDeskId }),
+        invoke('findRecoverableImportSession', { fingerprint, serviceDeskId, fileName: f.name }),
         invoke('getCustomerDetailFields').catch((err) => ({ fields: [], error: err.message }))
       ]);
-      session = recoverable;
+      session = recoverable?.id ? recoverable : null;
+      setRecoveryNote(recoverable?.id ? '' : recoverable?.reason || '');
       fields = detail?.fields || [];
       setDetailFields(fields);
       setDetailFieldsError(detail?.error || '');
@@ -386,7 +389,10 @@ function App() {
 
   async function previewWithCurrentMapping() {
     let session = null;
-    try { session = await invoke('findRecoverableImportSession', { fingerprint: fileFingerprint, serviceDeskId: await ensureDeskId() }); } catch { session = null; }
+    try {
+      const found = await invoke('findRecoverableImportSession', { fingerprint: fileFingerprint, serviceDeskId: await ensureDeskId(), fileName: csvInfo?.fileName || '' });
+      session = found?.id ? found : null;
+    } catch { session = null; }
     await previewWith(csvTable, mapping, session);
   }
 
@@ -644,6 +650,7 @@ function App() {
     <div className="nq-stack">
       {readOnly && <Notice kind="warning" title="Read-only: no active licence">This site doesn't have an active licence for Customer & Organisation Manager. You can still browse customers and organisations and preview imports, but importing is turned off. A Jira administrator can start a trial or renew from Manage apps.</Notice>}
       {error && <Notice kind="error">{error}</Notice>}
+      {tab === 'Import' && recoveryNote && !resumePlan && <Notice kind="warning" title="No saved import to resume for this file">{recoveryNote}</Notice>}
 
       {tab === 'Customers' && <Card title="Customers" description="Customers of the selected service project.">
         <div className="nq-filters">

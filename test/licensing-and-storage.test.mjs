@@ -88,7 +88,7 @@ test('a session is submitted only once every batch is finalised, then the recove
   assert.equal(store.get('import-session:s2').status, 'SUBMITTED');
   assert.equal(store.get('import-session:s2').linkedRows, 2);
   assert.equal(store.has(`import-recovery:1:${fingerprint}`), false);
-  assert.equal(await call('findRecoverableImportSession', { fingerprint, serviceDeskId: '1' }), null);
+  assert.equal((await call('findRecoverableImportSession', { fingerprint, serviceDeskId: '1' })).id, null);
   assert.equal(site.bulkRequests[0].idempotencyKey, 's2-batch-1');
 });
 
@@ -110,4 +110,27 @@ test('an import session keeps its column mapping for resume', async () => {
   assert.deepEqual(recovered.mapping, { emailHeader: 'Mail', displayNameHeader: 'Who', firstNameHeader: '', lastNameHeader: '', organisationHeader: '', detailHeaders: {} });
   await call('startImportSession', { id: 'm2', fingerprint: 'c'.repeat(64), serviceDeskId: '1', actionableRowNumbers: [2], totalRows: 1, totalBatches: 1 });
   assert.equal(store.get('import-session:m2').mapping, null, 'sessions without a mapping store null');
+});
+
+test('resume finds an unfinished session without its recovery pointer, and says why when nothing matches', async () => {
+  await call('startImportSession', { id: 'r1', fingerprint, serviceDeskId: '1', fileName: 'Crew.csv', actionableRowNumbers: [2, 3], totalRows: 2, totalBatches: 1 });
+  store.delete(`import-recovery:1:${fingerprint}`);
+  assert.equal((await call('findRecoverableImportSession', { fingerprint, serviceDeskId: '1' })).id, 'r1');
+  assert.equal(store.get(`import-recovery:1:${fingerprint}`).sessionId, 'r1', 'pointer restored');
+
+  const otherProject = await call('findRecoverableImportSession', { fingerprint, serviceDeskId: '2' });
+  assert.equal(otherProject.id, null);
+  assert.match(otherProject.reason, /another service project \(id 1\)/);
+
+  const edited = await call('findRecoverableImportSession', { fingerprint: 'd'.repeat(64), serviceDeskId: '1', fileName: 'crew.CSV' });
+  assert.equal(edited.id, null);
+  assert.match(edited.reason, /contents are different/);
+
+  assert.deepEqual(await call('findRecoverableImportSession', { fingerprint: 'd'.repeat(64), serviceDeskId: '1', fileName: 'other.csv' }), { id: null, reason: '' });
+});
+
+test('resume lookup reads past the first page of saved sessions', async () => {
+  for (let i = 0; i < 150; i += 1) store.set(`import-session:a${String(i).padStart(3, '0')}`, { id: `a${i}`, fingerprint: 'e'.repeat(64), serviceDeskId: '1', status: 'SUBMITTED', updatedAt: '2026-01-01' });
+  store.set('import-session:zz', { id: 'zz', fingerprint, serviceDeskId: '1', status: 'IN_PROGRESS', updatedAt: '2026-10-05', rowPlanChunks: 0 });
+  assert.equal((await call('findRecoverableImportSession', { fingerprint, serviceDeskId: '1' })).id, 'zz');
 });

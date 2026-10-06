@@ -5,6 +5,7 @@ import { resolverLicenseAllows, isProductionContext, UNLICENSED_MESSAGE } from '
 import { retrying, RATE_LIMITED_MESSAGE } from './http.js';
 import { registerSyncResolvers } from './sync/resolvers.js';
 import { registerImportFinalise, updateSessionBatch } from './import/finalise.js';
+import { exportBackupPage, importBackupBatch } from './backup.js';
 export { handleIssueEvent } from './sync/events.js';
 
 // Must match package.json (a unit test checks this).
@@ -492,5 +493,9 @@ secureDefine('bulkUpsertCustomers', async ({ payload }) => {
 
 registerSyncResolvers(secureDefine);
 registerImportFinalise(secureDefine, { retention: IMPORT_RECORD_RETENTION });
+
+// Backup & restore: Jira admins; restoring writes app storage, so it also needs a licence.
+secureDefine('exportBackupPage', async ({ payload }) => exportBackupPage(payload?.cursor || null));
+secureDefine('importBackupBatch', async ({ payload }) => importBackupBatch(payload?.items), { write: true });
 
 export const handler = resolver.getDefinitions();

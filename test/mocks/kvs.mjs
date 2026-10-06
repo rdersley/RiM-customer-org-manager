@@ -27,19 +27,24 @@ export const kvs = {
     store.delete(key);
     setOptions.delete(key);
   },
+  async batchSet(items) {
+    for (const item of items) await kvs.set(item.key, item.value, item.options);
+    return { successfulKeys: items.map(({ key }) => ({ key })), failedKeys: [] };
+  },
   query() {
     let condition = null;
     let max = 20;
+    let start = 0;
     const q = {
       where(_field, cond) { condition = cond; return q; },
       limit(n) { max = n; return q; },
+      cursor(c) { start = Number(c) || 0; return q; },
       async getMany() {
-        const results = [...store.entries()]
+        const all = [...store.entries()]
           .filter(([key]) => !condition || key.startsWith(condition.prefix))
-          .sort(([a], [b]) => a.localeCompare(b))
-          .slice(0, max)
-          .map(([key, value]) => ({ key, value: structuredClone(value) }));
-        return { results };
+          .sort(([a], [b]) => a.localeCompare(b));
+        const results = all.slice(start, start + max).map(([key, value]) => ({ key, value: structuredClone(value) }));
+        return start + max < all.length ? { results, nextCursor: String(start + max) } : { results };
       }
     };
     return q;

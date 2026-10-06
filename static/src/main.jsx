@@ -218,10 +218,20 @@ function App() {
       let start = 0;
       let complete = false;
       let batches = 0;
+      let pages = 5;
 
       while (!complete) {
-        if (batches >= 200) throw new Error('Customer index safety limit reached before Jira reported the final page.');
-        const batch = await invoke('getCustomerIndexBatch', { serviceDeskId, start, pages: 10 });
+        if (batches >= 2000) throw new Error('Customer index safety limit reached before Jira reported the final page.');
+        // Each call reads `pages` pages of 50 within Forge's 25-second limit. A project with many customers
+        // can take longer per page, so a call that times out is retried with fewer pages.
+        let batch;
+        for (;;) {
+          try { batch = await invoke('getCustomerIndexBatch', { serviceDeskId, start, pages }); break; }
+          catch (e) {
+            if (pages > 1 && /timed out|timeout/i.test(e.message)) { pages = Math.max(1, Math.floor(pages / 2)); continue; }
+            throw e;
+          }
+        }
         (batch.customers || []).forEach((customer) => {
           const email = String(customer.emailAddress || '').trim().toLowerCase();
           if (email) byEmail.set(email, customer);
@@ -339,7 +349,8 @@ function App() {
         invoke('getCustomerDetailFields').catch((err) => ({ fields: [], error: err.message }))
       ]);
       session = recoverable?.id ? recoverable : null;
-      setRecoveryNote(recoverable?.id ? '' : recoverable?.reason || '');
+      const otherDesk = recoverable?.otherServiceDeskId && (serviceDesks || []).find((d) => String(d.id) === String(recoverable.otherServiceDeskId));
+      setRecoveryNote(recoverable?.id ? '' : (otherDesk ? (recoverable.reason || '').replace(`(id ${otherDesk.id})`, `"${otherDesk.projectName}"`) : recoverable?.reason || ''));
       fields = detail?.fields || [];
       setDetailFields(fields);
       setDetailFieldsError(detail?.error || '');

@@ -418,7 +418,7 @@ secureDefine('findRecoverableImportSession', async ({ payload }) => {
   }
   const started = (s) => new Date(s.createdAt).toISOString().slice(0, 16).replace('T', ' ');
   const otherProject = unfinished.find((s) => s.fingerprint === fingerprint);
-  if (otherProject) return { id: null, reason: `This file has an unfinished import (started ${started(otherProject)} UTC) for another service project (id ${otherProject.serviceDeskId}). Select that project, then choose the file again to resume it.` };
+  if (otherProject) return { id: null, otherServiceDeskId: String(otherProject.serviceDeskId), reason: `This file has an unfinished import (started ${started(otherProject)} UTC) for another service project (id ${otherProject.serviceDeskId}). Select that project, then choose the file again to resume it.` };
   const sameName = fileName && unfinished.find((s) => String(s.fileName || '').toLowerCase() === fileName.toLowerCase());
   if (sameName) return { id: null, reason: `An unfinished import of ${sameName.fileName} (started ${started(sameName)} UTC) exists, but this file's contents are different, so it can't be resumed. It may have been saved again since (for example in Excel). Choose the original file to resume, or start a new import.` };
   return { id: null, reason: '' };

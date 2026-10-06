@@ -1,0 +1,89 @@
+name: Remote Forge QA
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: Deploy and upgrade the development installation
+        required: true
+        type: boolean
+        default: false
+      site:
+        description: Atlassian site
+        required: true
+        default: retailinmotion-sandbox1.atlassian.net
+      environment:
+        description: Forge environment
+        required: true
+        default: development
+      product:
+        description: Atlassian product
+        required: true
+        default: jira
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    env:
+      FORGE_EMAIL: ${{ secrets.FORGE_EMAIL }}
+      FORGE_API_TOKEN: ${{ secrets.FORGE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm install
+      - name: Build Custom UI
+        run: npm run build
+      - name: Forge lint
+        shell: bash
+        run: |
+          if [ -z "$FORGE_EMAIL" ] || [ -z "$FORGE_API_TOKEN" ]; then echo "Forge secrets are not configured; skipping Forge lint."; exit 0; fi
+          npm install --global @forge/cli
+          forge settings set usage-analytics false
+          forge settings set default-environment development
+          forge lint
+
+  deploy-and-smoke:
+    needs: validate
+    if: github.event_name == 'workflow_dispatch' && inputs.deploy == true
+    runs-on: ubuntu-latest
+    env:
+      FORGE_EMAIL: ${{ secrets.FORGE_EMAIL }}
+      FORGE_API_TOKEN: ${{ secrets.FORGE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check Forge credentials
+        shell: bash
+        run: |
+          test -n "$FORGE_EMAIL" || (echo "Missing FORGE_EMAIL secret" && exit 1)
+          test -n "$FORGE_API_TOKEN" || (echo "Missing FORGE_API_TOKEN secret" && exit 1)
+      - name: Install dependencies and Forge CLI
+        run: |
+          npm install
+          npm install --global @forge/cli
+          forge settings set usage-analytics false
+          forge settings set default-environment "${{ inputs.environment }}"
+      - name: Build Custom UI
+        run: npm run build
+      - name: Deploy Forge app
+        run: forge deploy --environment "${{ inputs.environment }}" --non-interactive
+      - name: Upgrade installation
+        run: forge install --upgrade --site "${{ inputs.site }}" --product "${{ inputs.product }}" --environment "${{ inputs.environment }}" --confirm-scopes --non-interactive
+      - name: Verify Jira site/project is reachable
+        env:
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+        shell: bash
+        run: |
+          if [ -z "$JIRA_EMAIL" ] || [ -z "$JIRA_API_TOKEN" ]; then echo "JIRA_EMAIL/JIRA_API_TOKEN not configured; skipping REST smoke check"; exit 0; fi
+          code=$(curl -sS -o /tmp/project.json -w "%{http_code}" -u "$JIRA_EMAIL:$JIRA_API_TOKEN" "https://${{ inputs.site }}/rest/api/3/project/TEST")
+          test "$code" = "200" || (cat /tmp/project.json && exit 1)
+          echo "TEST project reachable after deploy"

@@ -1,0 +1,87 @@
+name: Deployed UI Tests
+
+on:
+  push:
+    branches: [main, release/v1-blocker-fixes]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: customer-org-manager-deployed-ui
+  cancel-in-progress: true
+
+jobs:
+  ui:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      FORGE_EMAIL: ${{ secrets.FORGE_EMAIL }}
+      FORGE_API_TOKEN: ${{ secrets.FORGE_API_TOKEN }}
+      JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+      FORGE_APP_ID: ef946f9f-5a25-47d1-96ca-b1a11530f57c
+      FORGE_ENVIRONMENT_ID: 792afed1-f185-49b8-8bb3-e876d93a698c
+      RIM_SITE: retailinmotion-sandbox1.atlassian.net
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Check QA configuration
+        shell: bash
+        env:
+          JIRA_STORAGE_STATE_GZIP_B64: ${{ secrets.JIRA_STORAGE_STATE_GZIP_B64 }}
+        run: |
+          test -n "$FORGE_EMAIL" || (echo "Missing FORGE_EMAIL" && exit 1)
+          test -n "$FORGE_API_TOKEN" || (echo "Missing FORGE_API_TOKEN" && exit 1)
+          test -n "$JIRA_BASE_URL" || (echo "Missing JIRA_BASE_URL" && exit 1)
+          test -n "$JIRA_STORAGE_STATE_GZIP_B64" || (echo "Missing JIRA_STORAGE_STATE_GZIP_B64" && exit 1)
+
+      - name: Install app dependencies
+        run: npm install
+
+      - name: Build Custom UI
+        run: npm run build
+
+      - name: Install Forge CLI
+        run: npm install --global @forge/cli
+
+      - name: Deploy canonical build to development
+        shell: bash
+        run: |
+          forge settings set usage-analytics false
+          forge settings set default-environment development
+          forge deploy --environment development --approve MAJOR_VERSION_RULE --non-interactive
+
+      - name: Upgrade development installation and confirm scopes
+        run: forge install --upgrade --site "$RIM_SITE" --product jira --environment development --confirm-scopes --non-interactive
+
+      - name: Install Playwright
+        run: npm install --no-save @playwright/test
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Restore Jira session
+        shell: bash
+        env:
+          JIRA_STORAGE_STATE_GZIP_B64: ${{ secrets.JIRA_STORAGE_STATE_GZIP_B64 }}
+        run: |
+          mkdir -p .auth
+          printf '%s' "$JIRA_STORAGE_STATE_GZIP_B64" | base64 --decode | gzip --decompress > .auth/jira.json
+          test -s .auth/jira.json
+
+      - name: Run deployed acceptance tests
+        run: npx playwright test
+
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-evidence-${{ github.run_attempt }}
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 14

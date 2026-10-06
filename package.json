@@ -1,0 +1,18 @@
+{
+  "name": "retailinmotion-customer-organisation-manager",
+  "version": "0.6.2",
+  "private": true,
+  "scripts": {
+    "postinstall": "npm --prefix static install",
+    "build": "npm --prefix static run build",
+    "install:ui": "npm --prefix static install",
+    "test": "npm run test:unit && npm run check:ui",
+    "test:unit": "node --import ./test/register.mjs --test \"test/**/*.test.mjs\"",
+    "check:ui": "node static/node_modules/@retailinmotion/ui/bin/retailinmotion-ui-check.mjs static/src"
+  },
+  "dependencies": {
+    "@forge/api": "^5.0.0",
+    "@forge/resolver": "^1.7.0",
+    "@forge/kvs": "^1.0.0"
+  }
+}

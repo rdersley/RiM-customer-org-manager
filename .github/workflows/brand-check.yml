@@ -1,0 +1,20 @@
+name: Brand check
+
+# Retail inMotion edition: fails if the Marketplace brand appears anywhere in the repository.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  brand:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: No Marketplace branding
+        run: |
+          if git grep -n -i -I 'n[u]vriqo'; then
+            echo "::error::Marketplace branding found (see above). This repository is the Retail inMotion edition."
+            exit 1
+          fi

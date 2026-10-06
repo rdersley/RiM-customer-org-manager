@@ -1,0 +1,43 @@
+modules:
+  jira:adminPage:
+    - key: retailinmotion-customer-org-manager-admin
+      resource: main
+      resolver:
+        function: resolver
+      title: Customer & Organisation Manager
+      layout: blank
+  trigger:
+    # Client → Organisation sync. Skips unlicensed sites and the app's own edits.
+    - key: org-sync-issue-events
+      function: org-sync
+      events:
+        - avi:jira:created:issue
+        - avi:jira:updated:issue
+      filter:
+        ignoreSelf: true
+  function:
+    - key: resolver
+      handler: index.handler
+    - key: org-sync
+      handler: index.handleIssueEvent
+resources:
+  - key: main
+    path: static/dist
+permissions:
+  scopes:
+    # Why each scope is needed: docs/SECURITY.md
+    - storage:app
+    - read:jira-work
+    - read:jira-user
+    - write:jira-work
+    - read:servicedesk-request
+    - manage:servicedesk-customer
+    - write:customer:jira-service-management
+    - write:customer.profile:jira-service-management
+    - read:task:jira-service-management
+app:
+  runtime:
+    name: nodejs22.x
+  # Retail inMotion has its own Forge app. Replace with the id printed by:
+  #   forge register "Retail inMotion Customer & Organisation Manager"
+  id: ari:cloud:ecosystem::app/REPLACE-WITH-RETAIL-INMOTION-APP-ID

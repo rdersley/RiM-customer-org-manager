@@ -1,0 +1,70 @@
+name: Deploy to Retail inMotion work site
+
+# Manual only. The work site (retailinmotion.atlassian.net) runs this app from its own Forge
+# environment, "work-site", so merges to main never reach it until this is run.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type DEPLOY to deploy main to retailinmotion.atlassian.net'
+        required: true
+        type: string
+
+concurrency:
+  group: deploy-work-site
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.event.inputs.confirm == 'DEPLOY'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      FORGE_EMAIL: ${{ secrets.FORGE_EMAIL }}
+      FORGE_API_TOKEN: ${{ secrets.FORGE_API_TOKEN }}
+      FORGE_ENVIRONMENT: work-site
+      FORGE_SITE: retailinmotion.atlassian.net
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check Forge credentials and app id
+        shell: bash
+        run: |
+          test -n "$FORGE_EMAIL" || (echo "Missing FORGE_EMAIL secret" && exit 1)
+          test -n "$FORGE_API_TOKEN" || (echo "Missing FORGE_API_TOKEN secret" && exit 1)
+          if grep -q 'REPLACE-WITH-RETAIL-INMOTION-APP-ID' manifest.yml; then
+            echo "::error::manifest.yml still has the placeholder app id. Run forge register and commit the id."
+            exit 1
+          fi
+      - name: Install dependencies
+        run: npm install
+      - name: Test
+        shell: bash
+        run: if npm run | grep -qE '^  test$'; then npm test; fi
+      - name: Build
+        shell: bash
+        run: if npm run | grep -qE '^  build$'; then npm run build; fi
+      - name: Install Forge CLI
+        run: npm install --global @forge/cli@latest
+      - name: Disable Forge usage analytics
+        run: forge settings set usage-analytics false
+      - name: Create the work-site Forge environment if needed
+        shell: bash
+        run: |
+          if forge environments list --non-interactive 2>&1 | grep -qw "$FORGE_ENVIRONMENT"; then
+            echo "Forge environment $FORGE_ENVIRONMENT exists."
+          else
+            forge environments create --environment "$FORGE_ENVIRONMENT" --non-interactive
+          fi
+      - name: Deploy to the work-site environment
+        run: forge deploy --environment "$FORGE_ENVIRONMENT" --approve MAJOR_VERSION_RULE --non-interactive
+      - name: Install or upgrade on retailinmotion.atlassian.net
+        shell: bash
+        run: |
+          if forge install --upgrade all --site "$FORGE_SITE" --product jira --environment "$FORGE_ENVIRONMENT" --confirm-scopes --non-interactive; then
+            echo "Existing work-site installation upgraded."
+          else
+            forge install --site "$FORGE_SITE" --product jira --environment "$FORGE_ENVIRONMENT" --confirm-scopes --non-interactive
+          fi

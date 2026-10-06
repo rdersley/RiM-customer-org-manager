@@ -1,0 +1,74 @@
+name: BrowserStack UI QA
+
+on:
+  workflow_dispatch:
+    inputs:
+      path:
+        description: Jira path or full URL to exercise
+        required: true
+        default: /
+      browser:
+        description: BrowserStack browser
+        required: true
+        type: choice
+        options: [chrome, edge]
+        default: chrome
+permissions:
+  contents: read
+concurrency:
+  group: browserstack-qa-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  browserstack-smoke:
+    name: BrowserStack authenticated smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Validate QA secrets
+        env:
+          BS_USER: ${{ secrets.BROWSERSTACK_USERNAME }}
+          BS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY }}
+          QA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          STORAGE_STATE_GZIP: ${{ secrets.JIRA_STORAGE_STATE_GZIP_B64 }}
+        run: |
+          test -n "$BS_USER" || (echo "Missing BROWSERSTACK_USERNAME" && exit 1)
+          test -n "$BS_KEY" || (echo "Missing BROWSERSTACK_ACCESS_KEY" && exit 1)
+          test -n "$QA_BASE_URL" || (echo "Missing JIRA_BASE_URL" && exit 1)
+          test -n "$STORAGE_STATE_GZIP" || (echo "Missing JIRA_STORAGE_STATE_GZIP_B64" && exit 1)
+      - name: BrowserStack environment
+        uses: browserstack/github-actions/setup-env@master
+        with:
+          username: ${{ secrets.BROWSERSTACK_USERNAME }}
+          access-key: ${{ secrets.BROWSERSTACK_ACCESS_KEY }}
+          build-name: 'BUILD_INFO'
+          project-name: 'REPO_NAME'
+      - name: Install QA dependencies
+        run: npm --prefix qa install --no-audit --no-fund
+      - name: Restore Jira authentication state
+        env: { STORAGE_STATE_GZIP: "${{ secrets.JIRA_STORAGE_STATE_GZIP_B64 }}" }
+        run: |
+          mkdir -p qa/.auth
+          python - <<'PY'
+          import os,base64,gzip,pathlib
+          raw=base64.b64decode(os.environ['STORAGE_STATE_GZIP'].strip())
+          try: raw=gzip.decompress(raw)
+          except OSError: pass
+          pathlib.Path('qa/.auth/storageState.json').write_bytes(raw)
+          PY
+      - name: Run BrowserStack UI smoke
+        env:
+          QA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          QA_PATH: ${{ inputs.path }}
+          QA_BROWSER: ${{ inputs.browser }}
+          QA_SESSION_NAME: ${{ github.repository }} authenticated Jira smoke
+        run: node qa/run-browserstack.mjs
+      - name: Upload QA evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browserstack-qa-${{ github.run_id }}
+          path: qa/artifacts
+          if-no-files-found: ignore
+          retention-days: 14

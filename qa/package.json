@@ -1,0 +1,6 @@
+{
+  "name": "retailinmotion-browserstack-qa",
+  "private": true,
+  "type": "module",
+  "dependencies": { "playwright": "^1.55.0" }
+}

@@ -3,7 +3,9 @@
 // by every app, so a backup from one edition restores into the other.
 //
 // - Export walks every key in pages; the UI calls exportBackupPage until the cursor runs out and
-//   saves the items as one JSON file. Secrets (kvs.setSecret) are never listed or exported.
+//   saves the items as one JSON file. Secrets (kvs.setSecret) are not listed by Forge, so they are
+//   left out, except the ones an app names with `secretKeys` (records it keeps as secrets, such as
+//   contact details; never credentials). Those are added on the last page, marked `secret: true`.
 // - Restore writes the items back with batchSet. Keys not in the backup are left alone. Items that
 //   carried a time-to-live keep only the time they had left; items already expired are skipped.
 // Both are admin-only: each app registers the resolvers behind its own admin check.
@@ -25,7 +27,7 @@ const BATCH_SET_SIZE = 25;
 const now = () => Date.now();
 
 // One page of the export: as many storage pages as fit in ~2 MB or ~10 s.
-export async function exportBackupPage(cursor, { maxBytes = EXPORT_MAX_BYTES, maxMs = EXPORT_MAX_MS } = {}) {
+export async function exportBackupPage(cursor, { maxBytes = EXPORT_MAX_BYTES, maxMs = EXPORT_MAX_MS, secretKeys } = {}) {
   const started = now();
   const items = [];
   let bytes = 0;
@@ -42,6 +44,12 @@ export async function exportBackupPage(cursor, { maxBytes = EXPORT_MAX_BYTES, ma
     }
     next = page.nextCursor || undefined;
   } while (next && bytes < maxBytes && now() - started < maxMs);
+  if (!next && secretKeys) {
+    for (const key of await secretKeys()) {
+      const value = await kvs.getSecret(key);
+      if (value !== undefined) items.push({ key, value, secret: true });
+    }
+  }
   return { items, cursor: next || null };
 }
 
@@ -63,31 +71,39 @@ export function validateBackupItems(items) {
 }
 
 // Restores one batch. Returns how many items were written and skipped, and the keys that failed.
-export async function importBackupBatch(items, { skipKey = () => false } = {}) {
+export async function importBackupBatch(items, { skipKey = () => false, allowSecretKey = () => false } = {}) {
   validateBackupItems(items);
   const at = now();
   const writes = [];
+  const failed = [];
   let skipped = 0;
+  let secrets = 0;
   for (const item of items) {
     if (skipKey(item.key)) { skipped += 1; continue; }
+    if (item.secret) {
+      // Only the secret records this app backs up may be written back as secrets.
+      if (!allowSecretKey(item.key)) { skipped += 1; continue; }
+      try { await kvs.setSecret(item.key, item.value); secrets += 1; } catch { failed.push(item.key); }
+      continue;
+    }
     const ttl = ttlFor(item.expireTime, at);
     if (ttl !== null && ttl <= 0) { skipped += 1; continue; }
     writes.push({ key: item.key, value: item.value, ...(ttl ? { options: { ttl: { value: ttl, unit: 'SECONDS' } } } : {}) });
   }
-  const failed = [];
+  let writeFailures = 0;
   for (let i = 0; i < writes.length; i += BATCH_SET_SIZE) {
     const chunk = writes.slice(i, i + BATCH_SET_SIZE);
     const result = await kvs.batchSet(chunk);
-    for (const failure of result?.failedKeys || []) failed.push(failure.key);
+    for (const failure of result?.failedKeys || []) { failed.push(failure.key); writeFailures += 1; }
   }
-  return { restored: writes.length - failed.length, skipped, failed };
+  return { restored: writes.length - writeFailures + secrets, skipped, failed };
 }
 
 // Registers the two resolvers on an existing resolver. The caller is responsible for making both
 // admin-only (most apps pass their admin guard's key list; see each app's index).
-export function defineBackupResolvers(resolver, { skipKey } = {}) {
-  resolver.define('exportBackupPage', async ({ payload }) => exportBackupPage(payload?.cursor || null));
-  resolver.define('importBackupBatch', async ({ payload }) => importBackupBatch(payload?.items, { skipKey }));
+export function defineBackupResolvers(resolver, { skipKey, secretKeys, allowSecretKey } = {}) {
+  resolver.define('exportBackupPage', async ({ payload }) => exportBackupPage(payload?.cursor || null, { secretKeys }));
+  resolver.define('importBackupBatch', async ({ payload }) => importBackupBatch(payload?.items, { skipKey, allowSecretKey }));
 }
 
 export const BACKUP_RESOLVERS = ['exportBackupPage', 'importBackupBatch'];

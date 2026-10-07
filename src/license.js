@@ -1,17 +1,7 @@
-// Marketplace licence enforcement (same policy as Retail inMotion Follow-Up Manager).
-//
-// Forge only supplies `context.license` to UI resolvers, and only for paid apps
-// in the PRODUCTION environment. It is undefined in DEVELOPMENT/STAGING and for
-// apps that are not (yet) listed on the Marketplace.
-// See https://developer.atlassian.com/platform/marketplace/listing-forge-apps/
-//
-// Policy:
-// - Production fails closed: a missing or inactive licence means read-only.
-//   Browsing and previews keep working; anything that changes Jira or app
-//   storage is refused.
-// - Non-production environments allow a missing licence so the app can be
-//   tested. A simulated licence (`forge install --license inactive`) or the
-//   LICENSE_OVERRIDE variable (`active` / `inactive`) is still honoured there.
+// Retail inMotion edition: an internal app installed only on Retail inMotion sites, with no
+// Marketplace listing, so there is no licence to enforce. Every installation can read and write in
+// every Forge environment (production included). The helpers keep their names so the resolvers
+// and triggers stay in step with the Marketplace edition.
 
 const PRODUCTION = 'PRODUCTION';
 
@@ -21,33 +11,16 @@ function environmentType(context) {
 }
 
 export function isProductionContext(context) {
-  // An unknown environment is treated as production so enforcement fails closed.
   const type = environmentType(context);
   return type == null || type === PRODUCTION;
 }
 
-function licenseOverride(env) {
-  const value = String(env?.LICENSE_OVERRIDE ?? '').trim().toLowerCase();
-  if (value === 'active' || value === 'trial') return true;
-  if (value === 'inactive') return false;
-  return null;
+export function resolverLicenseAllows() {
+  return true;
 }
 
-export function resolverLicenseAllows(context, env = process.env) {
-  const license = context?.license;
-  if (isProductionContext(context)) return license?.active === true;
+export const UNLICENSED_MESSAGE = 'Customer & Organisation Manager is read-only on this site.';
 
-  const override = licenseOverride(env);
-  if (override != null) return override;
-  return license == null || license.active === true;
-}
-
-export const UNLICENSED_MESSAGE = 'Customer & Organisation Manager is read-only because this site has no active licence. '
-  + 'Browsing and previews still work; ask a Jira administrator to renew or start a trial from Manage apps to import changes.';
-
-// Event triggers get no licence object from Forge; `filter.appIsLicensed` in manifest.yml does the real
-// enforcement. This only rejects what is explicitly inactive (defence in depth).
-export function triggerLicenseAllows(context, env = process.env) {
-  if (licenseOverride(env) === false) return false;
-  return context?.license?.active !== false;
+export function triggerLicenseAllows() {
+  return true;
 }

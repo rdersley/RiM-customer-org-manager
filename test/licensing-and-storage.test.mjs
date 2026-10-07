@@ -20,46 +20,23 @@ test('app version matches package.json', () => {
   assert.equal(APP_VERSION, JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version);
 });
 
-test('licence policy: production fails closed, development allows a missing licence', () => {
-  assert.equal(resolverLicenseAllows(PROD_ACTIVE, {}), true);
-  assert.equal(resolverLicenseAllows(PROD_INACTIVE, {}), false);
-  assert.equal(resolverLicenseAllows(PROD_MISSING, {}), false);
-  assert.equal(resolverLicenseAllows(undefined, {}), false, 'unknown environment counts as production');
-  assert.equal(resolverLicenseAllows(DEV, {}), true);
-  assert.equal(resolverLicenseAllows({ ...DEV, license: { active: false } }, {}), false, 'simulated inactive licence is honoured');
-  assert.equal(resolverLicenseAllows(DEV, { LICENSE_OVERRIDE: 'inactive' }), false);
-  assert.equal(resolverLicenseAllows(PROD_MISSING, { LICENSE_OVERRIDE: 'active' }), false, 'override never unlocks production');
-});
-
-test('unlicensed production site is read-only: reads work, every write is refused', async () => {
-  const orgs = await call('getOrganizationIndexBatch', {}, PROD_MISSING);
-  assert.equal(orgs.organizations.length, 3);
-  const status = await call('getAppStatus', {}, PROD_MISSING);
-  assert.deepEqual(status, { version: APP_VERSION, licensed: false, production: true });
-
-  const writes = [
-    ['createOrganization', { name: 'X' }],
-    ['createImportOrganizations', { names: ['X'] }],
-    ['saveImportMapping', { name: 'm', serviceDeskId: '1', emailHeader: 'Email', displayNameHeader: 'Name' }],
-    ['deleteImportMapping', { id: 'm' }],
-    ['startImportSession', { id: 's', fingerprint, serviceDeskId: '1', actionableRowNumbers: [2], totalRows: 1, totalBatches: 1 }],
-    ['bulkUpsertCustomers', { rows: [{ email: 'a@x.test', displayName: 'A' }] }]
-  ];
-  for (const [name, payload] of writes) {
-    await assert.rejects(call(name, payload, PROD_MISSING), /no active licence/, `${name} should be refused`);
+test('internal edition: every environment and licence state can read and write', async () => {
+  for (const context of [PROD_ACTIVE, PROD_INACTIVE, PROD_MISSING, undefined, DEV, { ...DEV, license: { active: false } }]) {
+    assert.equal(resolverLicenseAllows(context, { LICENSE_OVERRIDE: 'inactive' }), true);
   }
-  assert.equal(site.organizations.length, 3);
-  assert.equal(site.bulkRequests.length, 0);
-  assert.equal(store.size, 0);
-});
-
-test('licensed production site can write', async () => {
-  const { created } = await call('createImportOrganizations', { names: ['New Org'] }, PROD_ACTIVE);
+  const status = await call('getAppStatus', {}, PROD_MISSING);
+  assert.deepEqual(status, { version: APP_VERSION, licensed: true, production: true });
+  const { created } = await call('createImportOrganizations', { names: ['New Org'] }, PROD_MISSING);
   assert.equal(created.length, 1);
-  assert.deepEqual(await call('getAppStatus', {}, PROD_ACTIVE), { version: APP_VERSION, licensed: true, production: true });
 });
 
-test('admin check runs before the licence check', async () => {
+test('internal manifest does not enable Marketplace licensing', () => {
+  const manifest = readFileSync(new URL('../manifest.yml', import.meta.url), 'utf8');
+  assert.doesNotMatch(manifest, /licensing:\s*\n\s+enabled:\s*true/);
+  assert.doesNotMatch(manifest, /appIsLicensed/);
+});
+
+test('admin check still guards every resolver', async () => {
   site.isAdmin = false;
   await assert.rejects(call('getAppStatus', {}, PROD_ACTIVE), /administrator permission/);
 });

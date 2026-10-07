@@ -1,0 +1,98 @@
+name: Register Forge app
+
+# One-off. Registers this repository as its own Forge app and commits the new app id to
+# manifest.yml. Needs the FORGE_EMAIL and FORGE_API_TOKEN repository secrets.
+on:
+  workflow_dispatch:
+    inputs:
+      developer_space:
+        description: 'Developer Space id. Leave blank if your account has only one (the run lists them).'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: register-forge-app
+  cancel-in-progress: false
+
+jobs:
+  register:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      FORGE_EMAIL: ${{ secrets.FORGE_EMAIL }}
+      FORGE_API_TOKEN: ${{ secrets.FORGE_API_TOKEN }}
+      APP_NAME: "Retail inMotion Customer & Organisation Manager"
+      DEVELOPER_SPACE: ${{ inputs.developer_space }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check secrets and current app id
+        shell: bash
+        run: |
+          test -n "$FORGE_EMAIL" || (echo "::error::Add the FORGE_EMAIL repository secret first." && exit 1)
+          test -n "$FORGE_API_TOKEN" || (echo "::error::Add the FORGE_API_TOKEN repository secret first." && exit 1)
+          if ! grep -q 'REPLACE-WITH-RETAIL-INMOTION-APP-ID' manifest.yml; then
+            echo "::error::manifest.yml already has an app id; this app is registered."
+            exit 1
+          fi
+      - name: Install Forge CLI
+        run: |
+          npm install --global @forge/cli@latest
+          forge settings set usage-analytics false
+      - name: Choose the Developer Space
+        shell: bash
+        run: |
+          if ! forge developer-spaces list --json > spaces.json 2> spaces.err; then
+            echo "Developer Spaces are not available for this account; registering without one."
+            cat spaces.err
+            exit 0
+          fi
+          node -e '
+            const fs = require("fs");
+            const raw = JSON.parse(fs.readFileSync("spaces.json", "utf8"));
+            const list = Array.isArray(raw) ? raw : raw.developerSpaces || raw.items || [];
+            console.log("Developer Spaces on this account:");
+            for (const s of list) console.log(`- ${s.name || "(unnamed)"}: ${s.id}`);
+            const wanted = (process.env.DEVELOPER_SPACE || "").trim();
+            let id = "";
+            if (wanted) id = (list.find((s) => s.id === wanted || s.name === wanted) || {}).id || "";
+            else if (list.length === 1) id = list[0].id;
+            if (!id && (wanted || list.length > 1)) {
+              console.log(`::error::${wanted ? `No Developer Space matches "${wanted}".` : "Several Developer Spaces exist."} Run again with one of the ids above.`);
+              process.exit(1);
+            }
+            if (id) fs.appendFileSync(process.env.GITHUB_ENV, `SPACE_ID=${id}\n`);
+          '
+      - name: Register the app
+        shell: bash
+        run: |
+          # Remove the placeholder so Forge reads a clean app section; register writes the new id.
+          sed -i '/id: ari:cloud:ecosystem::app\/REPLACE-WITH-RETAIL-INMOTION-APP-ID/d' manifest.yml
+          if [ -n "${SPACE_ID:-}" ]; then
+            forge register "$APP_NAME" --developer-space-id "$SPACE_ID" --accept-terms < /dev/null
+          else
+            forge register "$APP_NAME" < /dev/null
+          fi
+      - name: Check the new app id
+        shell: bash
+        run: |
+          if ! grep -qE 'id: ari:cloud:ecosystem::app/[0-9a-f-]{36}' manifest.yml; then
+            echo "::error::forge register did not write an app id to manifest.yml."
+            exit 1
+          fi
+          # Drop the placeholder instructions above the id.
+          sed -i '/# Retail inMotion has its own Forge app. Replace with the id printed by:/d; /#   forge register "/d; /# Replace with the id printed by: forge register/d' manifest.yml
+          grep -n 'id: ari:cloud:ecosystem::app/' manifest.yml
+      - name: Commit the app id
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add manifest.yml
+          git commit -m "Register the Retail inMotion Forge app"
+          git push

@@ -1,7 +1,8 @@
 name: Deploy to Retail inMotion work site
 
-# Manual only. The work site (retailinmotion.atlassian.net) runs this app from its own Forge
-# environment, "work-site", so merges to main never reach it until this is run.
+# Manual only. The work site (retailinmotion.atlassian.net) runs this app from the Forge
+# production environment, so merges to main (which reach the sandbox through development)
+# never reach it until this is run.
 on:
   workflow_dispatch:
     inputs:
@@ -22,7 +23,7 @@ jobs:
     env:
       FORGE_EMAIL: ${{ secrets.FORGE_EMAIL }}
       FORGE_API_TOKEN: ${{ secrets.FORGE_API_TOKEN }}
-      FORGE_ENVIRONMENT: work-site
+      FORGE_ENVIRONMENT: production
       FORGE_SITE: retailinmotion.atlassian.net
     steps:
       - uses: actions/checkout@v4
@@ -50,15 +51,7 @@ jobs:
         run: npm install --global @forge/cli@latest
       - name: Disable Forge usage analytics
         run: forge settings set usage-analytics false
-      - name: Create the work-site Forge environment if needed
-        shell: bash
-        run: |
-          if forge environments list --non-interactive 2>&1 | grep -qw "$FORGE_ENVIRONMENT"; then
-            echo "Forge environment $FORGE_ENVIRONMENT exists."
-          else
-            forge environments create --environment "$FORGE_ENVIRONMENT" --non-interactive
-          fi
-      - name: Deploy to the work-site environment
+      - name: Deploy to the production environment
         run: forge deploy --environment "$FORGE_ENVIRONMENT" --approve MAJOR_VERSION_RULE --non-interactive
       - name: Install or upgrade on retailinmotion.atlassian.net
         shell: bash

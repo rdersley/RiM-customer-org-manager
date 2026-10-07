@@ -7,7 +7,7 @@ modules:
       title: Customer & Organisation Manager
       layout: blank
   trigger:
-    # Client → Organisation sync. Skips unlicensed sites and the app's own edits.
+    # Client → Organisation sync. Skips the app's own edits.
     - key: org-sync-issue-events
       function: org-sync
       events:

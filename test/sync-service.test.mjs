@@ -65,12 +65,11 @@ test('updates that did not touch the Client field make no API calls', async () =
   assert.equal(site.requests.length, 0);
 });
 
-test('out-of-scope project, ignored request type, disabled sync, and unlicensed sites change nothing', async () => {
+test('out-of-scope project, ignored request type and disabled sync change nothing', async () => {
   addIssue({ id: 4, key: 'OPS-4', project: 'OPS', client: 'RYR' });
   assert.equal((await handleIssueEvent(updated(4, CLIENT_FIELD, 'OPS'), {})).skipped, 'out-of-scope');
   addIssue({ id: 5, key: 'SD-5', client: 'RYR', requestTypeId: '7' });
   assert.equal((await handleIssueEvent(updated(5), {})).skipped, 'out-of-scope');
-  assert.equal((await handleIssueEvent(updated(5), { license: { active: false } })).skipped, 'unlicensed');
   await call('saveSyncConfig', settings({ enabled: false }));
   addIssue({ id: 6, key: 'SD-6', client: 'RYR' });
   assert.equal((await handleIssueEvent(updated(6), {})).skipped, 'disabled');
@@ -120,14 +119,12 @@ test('corrections re-read each ticket, fix what still needs it, and report failu
   await assert.rejects(call('applySyncCorrections', { issueIds: Array.from({ length: 26 }, (_, i) => String(i + 1)) }), /at most 25/);
 });
 
-test('sync settings, corrections and health are read-only without a licence in production', async () => {
+test('internal edition: sync settings and health work in production without a licence', async () => {
   const PROD = { environmentType: 'PRODUCTION' };
   addIssue({ id: 20, key: 'SD-20', client: 'RYS', orgIds: ['10'] });
-  await assert.rejects(call('saveSyncConfig', settings(), PROD), /no active licence/);
-  await assert.rejects(call('applySyncCorrections', { issueIds: ['20'] }, PROD), /no active licence/);
-  await assert.rejects(call('saveSyncHealth', {}, PROD), /no active licence/);
-  assert.equal((await call('scanSyncHealth', {}, PROD)).needsChange.length, 1, 'checking is still allowed');
-  assert.deepEqual(orgIdsOf(20), ['10']);
+  await call('saveSyncConfig', settings(), PROD);
+  assert.equal((await call('scanSyncHealth', {}, PROD)).needsChange.length, 1);
+  assert.notEqual((await handleIssueEvent(updated(20), { license: { active: false } })).skipped, 'unlicensed');
 });
 
 test('client value suggestions come from JQL autocomplete without quotes', async () => {

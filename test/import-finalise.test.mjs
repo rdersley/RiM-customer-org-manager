@@ -91,11 +91,10 @@ test('a resumed session: submitted-but-unfinalised batches stay incomplete; lega
   assert.equal(store.get('import-session:legacy').status, 'SUBMITTED');
 });
 
-test('finalise validates input and is licence-gated', async () => {
+test('finalise validates input', async () => {
   await assert.rejects(call('finaliseImportBatch', { rows: [row(2, 'a@x.test')] }), /serviceDeskId is required/);
   await assert.rejects(call('finaliseImportBatch', { rows: [], serviceDeskId: '1' }), /No rows/);
   await assert.rejects(call('finaliseImportBatch', { rows: Array.from({ length: 101 }, (_, i) => row(i + 2, `p${i}@x.test`)), serviceDeskId: '1' }), /at most 100/);
-  await assert.rejects(call('finaliseImportBatch', { rows: [row(2, 'a@x.test')], serviceDeskId: '1' }, { environmentType: 'PRODUCTION' }), /no active licence/);
 });
 
 // ---- the browser side (static/src/importBatch.js) against the real resolvers ----

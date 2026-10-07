@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Card, Button, Notice, EmptyState, Loading, Lozenge, Field } from '@nuvriqo/ui/react';
+import { Card, Button, Notice, EmptyState, Loading, Lozenge, Field } from '@retailinmotion/ui/react';
 
 const sourceLabel = { created: ['New ticket', 'success'], 'reporter-changed': ['Reporter changed', 'info'], backfill: ['Bulk update', 'discovery'], failed: ['Failed', 'danger'] };
 const CHUNK = 25;

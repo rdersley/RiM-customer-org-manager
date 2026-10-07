@@ -7,6 +7,7 @@ import { AppHeader, Tabs, Card, Button, Notice, EmptyState, Loading, Lozenge, Fi
 import { organisationNote, lookupOrganisations, attachOrganisationIds, loadAllOrganisations } from './organisations.js';
 import OrgSync from './OrgSync.jsx';
 import BackupRestore from './BackupRestore.jsx';
+import DetailSync from './DetailSync.jsx';
 import { directImportBatch, submitAndFinaliseBatch, problemRowsCsv, recheckNotFound, isTaskLimitError, TASK_LIMIT_WAIT, loadRowPlan, describeFailure, failureReasons } from './importBatch.js';
 import { importImpact, importSafeguard, typedConfirmationMatches } from './safeguards.js';
 import { parseCsvTable, guessMapping, missingMappingFields, mappingFits, applyMapping, pickSavedMapping, sameMapping, toSaved, fromSaved, MAPPING_FIELDS } from './csv.js';
@@ -14,7 +15,7 @@ import { checkDetails, mergeValidation, detailCount, detailSummary } from './det
 
 // Injected by vite.config.js from the root package.json.
 const APP_VERSION = __APP_VERSION__;
-const tabs = ['Customers', 'Organisations', 'Import', 'Import History', 'Organisation sync', 'Backup & restore'];
+const tabs = ['Customers', 'Organisations', 'Import', 'Import History', 'Organisation sync', 'Ticket details', 'Backup & restore'];
 
 function validateRowsLocally(rows) {
   const seen = new Set();
@@ -853,6 +854,7 @@ function App() {
         </div>
       </Card>}
       {tab === 'Organisation sync' && <OrgSync invoke={invoke} serviceDesks={serviceDesks} orgs={orgs} loadOrgs={loadOrgs} readOnly={readOnly}/>}
+      {tab === 'Ticket details' && <DetailSync invoke={invoke} serviceDesks={serviceDesks} readOnly={readOnly}/>}
       {tab === 'Backup & restore' && <BackupRestore invoke={invoke} app="Customer & Organisation Manager" filePrefix="retailinmotion-customer-org-manager"/>}
     </div>
     <Footer product="Customer & Organisation Manager" version={APP_VERSION}/>

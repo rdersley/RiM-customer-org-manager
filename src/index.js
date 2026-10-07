@@ -4,6 +4,7 @@ import { kvs, WhereConditions } from '@forge/kvs';
 import { resolverLicenseAllows, isProductionContext, UNLICENSED_MESSAGE } from './license.js';
 import { retrying, RATE_LIMITED_MESSAGE } from './http.js';
 import { registerSyncResolvers } from './sync/resolvers.js';
+import { registerDetailSyncResolvers } from './details-sync/resolvers.js';
 import { registerImportFinalise, updateSessionBatch } from './import/finalise.js';
 import { exportBackupPage, importBackupBatch } from './backup.js';
 import { registerDirectImport } from './import/direct.js';
@@ -586,6 +587,7 @@ secureDefine('bulkUpsertCustomers', async ({ payload }) => {
 }, { write: true });
 
 registerSyncResolvers(secureDefine);
+registerDetailSyncResolvers(secureDefine);
 registerImportFinalise(secureDefine, { retention: IMPORT_RECORD_RETENTION });
 registerDirectImport(secureDefine, { retention: IMPORT_RECORD_RETENTION });
 

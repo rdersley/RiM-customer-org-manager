@@ -41,6 +41,7 @@ Production fails closed. Without an active licence, reads and previews work, and
 | `read:task:jira-service-management` | Reading bulk task status (`/jsm/csm/api/v1/tasks/{id}`) for Import History |
 | `read:customer.detail-field:jira-service-management` | Import: listing the site's customer detail fields (`GET /jsm/csm/api/v1/customer/details`: names, types and options) for the column mapping. Added in 0.7.0 |
 | `write:customer.detail:jira-service-management` | Import: setting a customer's detail values directly (`PUT /jsm/csm/api/v1/customer/{id}/details`), one customer at a time, instead of through Jira's queued bulk API, which took about 8 minutes per 100 customers on a live site. Added in 0.8.0 |
+| `read:customer.detail:jira-service-management` | Ticket details: reading a ticket reporter's customer detail values (`GET /jsm/csm/api/v1/customer/{id}/details`) to fill ticket fields such as Crew code and Base. Read as the admin on the admin page, and as the app from the issue-created trigger. Added in 0.8.0 |
 
 Version 0.3.0 removed six scopes that nothing used: `read:user:jira`, `read:organization`, `write:organization`, `write:organization.profile`, `read:customer` and `read:customer.profile` (the last five are the `:jira-service-management` granular scopes).
 

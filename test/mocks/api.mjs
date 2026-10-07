@@ -26,6 +26,7 @@ export function resetSite(count = 0) {
   site.taskLimit = 0; // the next N bulk calls are refused like the live site: 400 Maximum number of tasks reached
   site.detailFields = null; // customer detail field definitions (CSM); null = the site has none (404)
   site.issues = new Map();
+  site.issueEdits = [];
   site.failIssueIds = new Set();
   // Service projects, and the organisations added to each (Jira only accepts those on a ticket).
   site.serviceDesks = [{ id: '1', projectKey: 'SD', projectName: 'Service desk' }, { id: '2', projectKey: 'OPS', projectName: 'Operations' }];
@@ -42,7 +43,7 @@ export function resetSite(count = 0) {
 }
 
 // Adds a ticket. `orgIds` are organisation ids already on it.
-export function addIssue({ id, key, project = 'SD', client = null, second = null, orgIds = [], requestTypeId = '1' }) {
+export function addIssue({ id, key, project = 'SD', client = null, second = null, orgIds = [], requestTypeId = '1', reporter = null, extra = {} }) {
   site.issues.set(String(id), {
     id: String(id),
     key,
@@ -51,7 +52,9 @@ export function addIssue({ id, key, project = 'SD', client = null, second = null
       [CLIENT_FIELD]: client == null ? null : { value: client, id: `opt-${client}` },
       [SECOND_FIELD]: second == null ? null : { value: second, id: `opt-${second}` },
       [ORG_FIELD]: orgIds.map((o) => ({ id: Number(o), name: `Org ${o}` })),
-      [REQUEST_TYPE_FIELD]: { requestType: { id: requestTypeId } }
+      [REQUEST_TYPE_FIELD]: { requestType: { id: requestTypeId } },
+      reporter: reporter ? { accountId: reporter } : null,
+      ...extra
     }
   });
 }
@@ -93,9 +96,12 @@ async function requestJira(as, path, options = {}) {
   }
   if (path === '/rest/api/3/search/jql' && method === 'POST') {
     const body = JSON.parse(options.body);
-    const projects = [...body.jql.matchAll(/"([A-Z0-9_]+)"/g)].map((m) => m[1]);
+    const projects = [...body.jql.split(')')[0].matchAll(/"([A-Z0-9_]+)"/g)].map((m) => m[1]);
+    // Ticket details sync searches by reporter (its field conditions are re-checked by the app).
+    const byReporter = body.jql.includes('reporter IS NOT EMPTY');
+    site.lastJql = body.jql;
     const all = [...site.issues.values()]
-      .filter((i) => projects.includes(i.fields.project.key) && i.fields[CLIENT_FIELD] != null)
+      .filter((i) => projects.includes(i.fields.project.key) && (byReporter ? i.fields.reporter != null : i.fields[CLIENT_FIELD] != null))
       .sort((a, b) => a.key.localeCompare(b.key, undefined, { numeric: true }));
     const start = Number(body.nextPageToken || 0);
     const issues = all.slice(start, start + body.maxResults).map((i) => structuredClone(i));
@@ -115,6 +121,8 @@ async function requestJira(as, path, options = {}) {
         return json({ errorMessages: ['Invalid organization ids specified.'], errors: { [ORG_FIELD]: 'Specify a valid value for Organizations ID' } }, 400);
       }
       if (fields[ORG_FIELD]) issue.fields[ORG_FIELD] = fields[ORG_FIELD].map((id) => ({ id, name: `Org ${id}` }));
+      for (const [id, value] of Object.entries(fields)) if (id !== ORG_FIELD) issue.fields[id] = value;
+      site.issueEdits.push({ id: issue.id, fields });
       return { ok: true, status: 204, text: async () => '' };
     }
   }
@@ -175,6 +183,12 @@ async function requestJira(as, path, options = {}) {
     const account = { accountId: `qm:${site.accounts.size + 1}`, displayName, emailAddress: email, accountType: 'customer', searchesUntilIndexed: site.searchLag };
     site.accounts.set(key, account);
     return json({ accountId: account.accountId, displayName, emailAddress: email }, 201);
+  }
+  const getDetails = path.match(/^\/jsm\/csm\/api\/v1\/customer\/([^/?]+)\/details$/);
+  if (getDetails && method === 'GET') {
+    const account = [...site.accounts.values()].find((a) => a.accountId === decodeURIComponent(getDetails[1]));
+    if (!account) return json({ errorMessage: 'Customer not found' }, 404);
+    return json({ details: Object.entries(account.details || {}).map(([name, values]) => ({ name, values })) });
   }
   const setDetail = path.match(/^\/jsm\/csm\/api\/v1\/customer\/([^/]+)\/details\?fieldName=(.+)$/);
   if (setDetail && method === 'PUT') {

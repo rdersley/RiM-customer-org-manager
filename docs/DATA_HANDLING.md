@@ -61,6 +61,8 @@ Installation-scoped Forge KVS only. No customer names or email addresses are sto
 | `sync-config` | Sync settings: on/off, Client, optional second, Organizations and Request Type field ids, project keys, ignored request type ids, and the Client value (plus optional second-field value) → organisation id/name mappings | Until changed |
 | `sync-health` | The last ticket check's counts, and unmapped Client values with ticket counts | Replaced by the next check |
 | `sync-log:<time>:<issueKey>` | A correction: issue key, Client value, organisation ids before and after, and why (client changed / new ticket / bulk correction / no mapping) | 90 days (KVS TTL) |
+| `detail-sync-config` | Ticket details settings: on/off, project keys, customer detail name → ticket field id/name/type mappings, a select field's option names, and the placeholder values to replace | Until changed |
+| `detail-sync-log:<time>:<issueKey>` | A ticket the app filled in: issue key, the names of the fields set, why (new ticket / reporter changed / bulk update / failed) and any error. No customer detail values | 90 days (KVS TTL) |
 
 **Personal data:** the app stores no Atlassian account IDs, emails or names (Client values and organisation names are business data), so it does not use the Personal Data Reporting API (`report:personal-data` is not requested). The CSV file name is stored as typed by the administrator; admins should avoid putting personal data in file names.
 

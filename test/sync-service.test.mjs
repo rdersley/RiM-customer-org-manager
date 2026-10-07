@@ -42,7 +42,7 @@ test('saving rejects a Client field that is not a select/text custom field', asy
 
 test('client changed RYR → RYS: the event swaps Ryanair for Buzz, as the app, and logs it', async () => {
   addIssue({ id: 1, key: 'SD-1', client: 'RYS', orgIds: ['10', '99'] });
-  const result = await handleIssueEvent(updated(1), {});
+  const result = (await handleIssueEvent(updated(1), {})).organisations;
   assert.equal(result.status, 'needs-change');
   assert.deepEqual(orgIdsOf(1).sort(), ['20', '99']);
   assert.ok(writes().every((r) => r.as === 'app'));
@@ -54,33 +54,33 @@ test('client changed RYR → RYS: the event swaps Ryanair for Buzz, as the app, 
 
 test('a new ticket gets its organisation on create', async () => {
   addIssue({ id: 2, key: 'SD-2', client: 'LDA' });
-  await handleIssueEvent(created(2), {});
+  (await handleIssueEvent(created(2), {})).organisations;
   assert.deepEqual(orgIdsOf(2), ['30']);
 });
 
 test('updates that did not touch the Client field make no API calls', async () => {
   addIssue({ id: 3, key: 'SD-3', client: 'RYR' });
-  const result = await handleIssueEvent(updated(3, 'summary'), {});
+  const result = (await handleIssueEvent(updated(3, 'summary'), {})).organisations;
   assert.equal(result.skipped, 'client-unchanged');
   assert.equal(site.requests.length, 0);
 });
 
 test('out-of-scope project, ignored request type and disabled sync change nothing', async () => {
   addIssue({ id: 4, key: 'OPS-4', project: 'OPS', client: 'RYR' });
-  assert.equal((await handleIssueEvent(updated(4, CLIENT_FIELD, 'OPS'), {})).skipped, 'out-of-scope');
+  assert.equal(((await handleIssueEvent(updated(4, CLIENT_FIELD, 'OPS'), {})).organisations).skipped, 'out-of-scope');
   addIssue({ id: 5, key: 'SD-5', client: 'RYR', requestTypeId: '7' });
-  assert.equal((await handleIssueEvent(updated(5), {})).skipped, 'out-of-scope');
+  assert.equal(((await handleIssueEvent(updated(5), {})).organisations).skipped, 'out-of-scope');
   await call('saveSyncConfig', settings({ enabled: false }));
   addIssue({ id: 6, key: 'SD-6', client: 'RYR' });
-  assert.equal((await handleIssueEvent(updated(6), {})).skipped, 'disabled');
+  assert.equal(((await handleIssueEvent(updated(6), {})).organisations).skipped, 'disabled');
   assert.equal(writes().length, 0);
 });
 
 test('already-correct and unmapped tickets are not edited; unmapped ones are flagged in the log', async () => {
   addIssue({ id: 7, key: 'SD-7', client: 'RYR', orgIds: ['10'] });
-  assert.equal((await handleIssueEvent(updated(7), {})).status, 'correct');
+  assert.equal(((await handleIssueEvent(updated(7), {})).organisations).status, 'correct');
   addIssue({ id: 8, key: 'SD-8', client: 'NEW', orgIds: ['10'] });
-  assert.equal((await handleIssueEvent(updated(8), {})).status, 'missing-mapping');
+  assert.equal(((await handleIssueEvent(updated(8), {})).organisations).status, 'missing-mapping');
   assert.equal(writes().length, 0);
   const log = await call('getSyncLog', {});
   assert.equal(log.find((e) => e.issueKey === 'SD-8').source, 'missing-mapping');
@@ -133,7 +133,7 @@ test('client value suggestions come from JQL autocomplete without quotes', async
 
 test('the correction log does not store names or emails', async () => {
   addIssue({ id: 30, key: 'SD-30', client: 'RYR' });
-  await handleIssueEvent(updated(30), {});
+  (await handleIssueEvent(updated(30), {})).organisations;
   const entry = [...store.entries()].find(([k]) => k.startsWith('sync-log:'))[1];
   assert.deepEqual(Object.keys(entry).sort(), ['at', 'clientValue', 'from', 'issueKey', 'source', 'to']);
 });
@@ -149,7 +149,7 @@ test('saving warns about mapped organisations that are not added to a selected p
 test('when Jira rejects the change (org not in the project) the event logs a failure and changes nothing', async () => {
   site.projectOrgs.set('SD', ['10', '20']);
   addIssue({ id: 40, key: 'SD-40', client: 'LDA', orgIds: ['10'] });
-  const result = await handleIssueEvent(updated(40), {});
+  const result = (await handleIssueEvent(updated(40), {})).organisations;
   assert.equal(result.status, 'failed');
   assert.deepEqual(orgIdsOf(40), ['10']);
   const entry = (await call('getSyncLog', {})).find((e) => e.issueKey === 'SD-40');
@@ -169,7 +169,7 @@ const secondChanged = (id) => ({ ...updated(id), changelog: { items: [{ fieldId:
 test('second field: changing only the second field re-evaluates and swaps the organisation', async () => {
   await call('saveSyncConfig', settings({ secondaryFieldId: SECOND_FIELD, mappings: splitMappings }));
   addIssue({ id: 50, key: 'SD-50', client: 'RYR', second: 'London', orgIds: ['11'] });
-  const r = await handleIssueEvent(secondChanged(50), {});
+  const r = (await handleIssueEvent(secondChanged(50), {})).organisations;
   assert.equal(r.status, 'needs-change');
   assert.deepEqual(orgIdsOf(50), ['12']);
   const entry = (await call('getSyncLog', {})).find((e) => e.issueKey === 'SD-50');
@@ -178,7 +178,7 @@ test('second field: changing only the second field re-evaluates and swaps the or
 
 test('second field: without it configured, second-field changes are ignored', async () => {
   addIssue({ id: 51, key: 'SD-51', client: 'RYR', second: 'London', orgIds: [] });
-  assert.equal((await handleIssueEvent(secondChanged(51), {})).skipped, 'client-unchanged');
+  assert.equal(((await handleIssueEvent(secondChanged(51), {})).organisations).skipped, 'client-unchanged');
 });
 
 test('second field: health check reports unmapped Client + second combinations', async () => {

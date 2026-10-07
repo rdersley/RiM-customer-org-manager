@@ -38,6 +38,4 @@ permissions:
 app:
   runtime:
     name: nodejs22.x
-  # Retail inMotion has its own Forge app. Replace with the id printed by:
-  #   forge register "Retail inMotion Customer & Organisation Manager"
-  id: ari:cloud:ecosystem::app/REPLACE-WITH-RETAIL-INMOTION-APP-ID
+  id: ari:cloud:ecosystem::app/62238a46-6ea9-4531-81ea-315bda4df9b2

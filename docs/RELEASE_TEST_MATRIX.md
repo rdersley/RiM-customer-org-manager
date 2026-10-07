@@ -25,6 +25,7 @@ The live suite needs a saved Jira session: from the repo folder, run `npx playwr
 | Preview (small) | Choose a CSV with a new org, an existing org, an existing customer and a bad row | Create / Skip / Update / Error, with the org note on the new org only |
 | Preview (large) | Choose a 16k-row CSV | Comparison completes; Import enabled |
 | Import | Import one row with a new org | One customer, one org created; Import History shows the session and task |
+| Customer details | CSV with First Name, Last Name, a select detail (one bad option), a number detail and some blank detail cells | Full name joined; bad option row is Error; after import the details are set and blank cells left existing values alone |
 | Resume | Start an import, close the tab mid-way, choose the same file | Resume offered; nothing changes until Resume is clicked |
 | Read-only | `forge install --upgrade --license inactive` on the dev site (or set `LICENSE_OVERRIDE=inactive`) | Read-only notice; Import and Resume disabled; direct write calls refused |
 | Licensed | `--license active` | Import works |

@@ -98,7 +98,7 @@ test('finalise validates input', async () => {
 });
 
 // ---- the browser side (static/src/importBatch.js) against the real resolvers ----
-import { waitForTask, submitAndFinaliseBatch, problemRowsCsv } from '../static/src/importBatch.js';
+import { waitForTask, submitAndFinaliseBatch, problemRowsCsv, describeFailure, failureReasons } from '../static/src/importBatch.js';
 import { attachOrganisationIds } from '../static/src/organisations.js';
 
 const invoke = (name, payload) => call(name, payload);
@@ -110,6 +110,13 @@ test('waitForTask returns on a terminal status (including FAILED) and times out 
   const running = async () => { calls += 1; return { status: 'IN_PROGRESS' }; };
   assert.equal(await waitForTask(running, 't', { ...fastClock(), timeoutMs: 10000, intervalMs: 2000 }), 'TIMED_OUT');
   assert.equal(calls, 6);
+});
+
+test('waitForTask treats FINISHED (what a live site reports) as done straight away', async () => {
+  let calls = 0;
+  const finished = async () => { calls += 1; return { status: 'FINISHED' }; };
+  assert.equal(await waitForTask(finished, 't', fastClock()), 'FINISHED');
+  assert.equal(calls, 1);
 });
 
 test('a two-batch import from the browser side ends with everyone in the project and their organisation', async () => {
@@ -155,4 +162,91 @@ test('new accounts that Jira search has not indexed yet are found by the end-of-
   const session = store.get('import-session:lag');
   assert.deepEqual([session.linkedRows, session.problemRows], [2, 1], 'retries add to the batch counts');
   assert.ok(progress.length >= 2 && progress.at(-1) === 1);
+});
+
+test('task failures are described from common Jira shapes, falling back to the raw entry', () => {
+  assert.deepEqual(describeFailure({ payload: { email: 'a@x.test' }, errors: [{ message: 'Invalid option for Base' }] }), { who: 'a@x.test', why: 'Invalid option for Base', extra: '{"payload":{"email":"a@x.test"},"errors":[{"message":"Invalid option for Base"}]}' });
+  assert.deepEqual(describeFailure({ email: 'b@x.test', errorMessage: 'Email is not valid' }), { who: 'b@x.test', why: 'Email is not valid', extra: '{"email":"b@x.test"}' });
+  assert.equal(describeFailure({ message: 'Invalid detail field value', index: 4 }).extra, '{"index":4}');
+  assert.equal(describeFailure({ odd: 1 }).why, '{"odd":1}');
+  assert.deepEqual(failureReasons([{ failures: [{ message: 'X' }, { message: 'Y' }, { message: 'X' }] }, null, { failures: [] }]), [{ why: 'X', count: 2 }, { why: 'Y', count: 1 }]);
+});
+
+test('a batch Jira already accepted is not sent again: the retry waits for its task and finalises', async () => {
+  resetSite(1);
+  const rows = Array.from({ length: 3 }, (_, i) => ({ rowNumber: i + 2, email: `q${i}@x.test`, displayName: `Q${i}`, organizationIds: [] }));
+  await call('startImportSession', { id: 'again', fingerprint, serviceDeskId: '1', actionableRowNumbers: rows.map((r) => r.rowNumber), totalRows: 3, totalBatches: 1 });
+  const plan = { sessionId: 'again', serviceDeskId: '1', chunks: [rows] };
+  let accepted;
+  await submitAndFinaliseBatch(invoke, plan, 0, { ...fastClock(), onSubmitted: (t) => { accepted = t.id; } });
+  const sent = site.bulkRequests.length;
+  const retried = await submitAndFinaliseBatch(invoke, plan, 0, { ...fastClock(), taskId: accepted });
+  assert.equal(site.bulkRequests.length, sent, 'no second bulk request');
+  assert.equal(retried.id, accepted);
+  assert.equal(retried.linked, 3);
+});
+
+// ---- the direct route (src/import/direct.js + directImportBatch) ----
+import { directImportBatch } from '../static/src/importBatch.js';
+
+test('direct route: creates new customers, sets details, keeps existing ones, and adds everyone to the project and organisation', async () => {
+  resetSite(2);
+  site.accounts.set('old@x.test', { accountId: 'qm:old', displayName: 'Old Name', emailAddress: 'old@x.test', accountType: 'customer' });
+  const rows = [
+    ...Array.from({ length: 23 }, (_, i) => ({ rowNumber: i + 2, email: `d${i}@x.test`, displayName: `D${i}`, details: { Base: ['MAD'], CrewCode: [`C${i}`] }, organizationIds: ['2'] })),
+    { rowNumber: 30, email: 'old@x.test', displayName: 'New Name', details: { Base: ['STN'] }, organizationIds: [] },
+    { rowNumber: 31, email: 'phone@x.test', displayName: 'Phone', details: { PhoneNumber: ['34622404636'], Base: ['DUB'] }, organizationIds: [] },
+    { rowNumber: 32, email: 'reject-me@x.test', displayName: 'Nope', details: {}, organizationIds: [] }
+  ];
+  await call('startImportSession', { id: 'dir', fingerprint, serviceDeskId: '1', actionableRowNumbers: rows.map((r) => r.rowNumber), totalRows: rows.length, totalBatches: 1 });
+  const progress = [];
+  const result = await directImportBatch(invoke, { sessionId: 'dir', serviceDeskId: '1', chunks: [rows] }, 0, { onProgress: (d) => progress.push(d) });
+
+  assert.equal(site.bulkRequests.length, 1, 'only the rename goes through the bulk API');
+  assert.deepEqual(site.bulkRequests[0].customerProfiles, [{ operationType: 'UPSERT', payload: { email: 'old@x.test', displayName: 'New Name' } }]);
+  assert.deepEqual(site.accounts.get('d5@x.test').details, { Base: ['MAD'], CrewCode: ['C5'] });
+  assert.deepEqual(site.accounts.get('old@x.test').details, { Base: ['STN'] });
+  assert.deepEqual(site.accounts.get('phone@x.test').details, { Base: ['DUB'] }, 'a refused detail does not stop the others');
+  assert.equal(site.deskCustomers.get('1').size, 25);
+  assert.equal(site.orgMembers.get('2').size, 23);
+  assert.equal(result.linked, 24);
+  assert.deepEqual(result.problems.map((p) => p.rowNumber).sort(), [31, 32]);
+  assert.match(result.problems.find((p) => p.rowNumber === 31).error, /PhoneNumber not set: Invalid detail field value/);
+  assert.match(result.problems.find((p) => p.rowNumber === 32).error, /Customer not created/);
+  assert.equal(progress.at(-1), 26);
+
+  const session = store.get('import-session:dir');
+  assert.equal(session.status, 'SUBMITTED');
+  assert.equal(session.batches[0].finalised, true);
+  const history = store.get('import:dir-batch-1');
+  assert.equal(history.task.status, 'FINISHED');
+  assert.equal(history.task.failures.length, 2);
+  assert.ok(!JSON.stringify(history).includes('@'), 'no emails stored');
+  assert.equal(describeFailure(history.task.failures.find((f) => f.row === 31)).who, 'Row 31');
+  assert.equal(history.taskId, undefined);
+});
+
+test('direct route: a customer id from the preview skips the create call, and re-running a batch is harmless', async () => {
+  resetSite(1);
+  site.accounts.set('known@x.test', { accountId: 'qm:known', displayName: 'Known', emailAddress: 'known@x.test', accountType: 'customer' });
+  const rows = [{ rowNumber: 2, email: 'known@x.test', displayName: 'Known', accountId: 'qm:known', nameUnchanged: true, action: 'UPDATE', details: { Base: ['MAD'] } }];
+  await call('startImportSession', { id: 'k', fingerprint, serviceDeskId: '1', actionableRowNumbers: [2], totalRows: 1, totalBatches: 1 });
+  const plan = { sessionId: 'k', serviceDeskId: '1', chunks: [rows] };
+  await directImportBatch(invoke, plan, 0);
+  assert.ok(!site.requests.some((r) => r.path === '/rest/servicedeskapi/customer'), 'no create call');
+  const again = await directImportBatch(invoke, plan, 0);
+  assert.equal(again.linked, 1);
+  assert.deepEqual(site.accounts.get('known@x.test').details, { Base: ['MAD'] });
+});
+
+test('direct route: a failed request is retried on its own before the batch fails', async () => {
+  resetSite(1);
+  let failures = 1;
+  const flaky = (name, payload) => (name === 'directImportCustomers' && failures-- > 0 ? Promise.reject(new Error('There was an error invoking the function - timed out')) : call(name, payload));
+  const rows = [{ rowNumber: 2, email: 'f@x.test', displayName: 'F', details: {} }];
+  await call('startImportSession', { id: 'f', fingerprint, serviceDeskId: '1', actionableRowNumbers: [2], totalRows: 1, totalBatches: 1 });
+  const slept = [];
+  const result = await directImportBatch(flaky, { sessionId: 'f', serviceDeskId: '1', chunks: [rows] }, 0, { sleep: async (ms) => { slept.push(ms); } });
+  assert.equal(result.linked, 1);
+  assert.deepEqual(slept, [3000]);
 });

@@ -5,6 +5,7 @@ import { site, resetSite } from './mocks/api.mjs';
 import { store, setOptions, resetStore } from './mocks/kvs.mjs';
 import { handler, APP_VERSION, IMPORT_RECORD_RETENTION } from '../src/index.js';
 import { resolverLicenseAllows } from '../src/license.js';
+import { loadRowPlan } from '../static/src/importBatch.js';
 
 const DEV = { environmentType: 'DEVELOPMENT' };
 const PROD_ACTIVE = { environmentType: 'PRODUCTION', license: { active: true } };
@@ -49,7 +50,12 @@ test('a 50,000-row import plan is stored in chunks within the KVS value limit an
 
   const recovered = await call('findRecoverableImportSession', { fingerprint, serviceDeskId: '1' });
   assert.equal(recovered.id, 'big');
-  assert.deepEqual(recovered.actionableRowNumbers, rows);
+  assert.equal(recovered.actionableRowNumbers, undefined, 'the plan is read in chunks, not in one reply');
+  const invoked = [];
+  const invoke = (name, payload) => { invoked.push(name); return call(name, payload); };
+  assert.deepEqual(await loadRowPlan(invoke, recovered), rows);
+  assert.deepEqual(invoked, Array(10).fill('getImportRowPlanChunk'));
+  await assert.rejects(call('getImportRowPlanChunk', { sessionId: 'big', index: 10 }), /out of range/);
 });
 
 test('session list omits row plans; recovery refuses an incomplete plan', async () => {
@@ -60,14 +66,15 @@ test('session list omits row plans; recovery refuses an incomplete plan', async 
   assert.ok(!('import-session-rows:s1:0' === listed.id));
 
   store.delete('import-session-rows:s1:0');
-  await assert.rejects(call('findRecoverableImportSession', { fingerprint, serviceDeskId: '1' }), /row plan is incomplete/);
+  const recovered = await call('findRecoverableImportSession', { fingerprint, serviceDeskId: '1' });
+  await assert.rejects(loadRowPlan(call, recovered), /row plan is incomplete/);
 });
 
 test('sessions saved before chunking (inline row numbers) still recover', async () => {
   store.set('import-session:old', { id: 'old', fingerprint, serviceDeskId: '1', actionableRowNumbers: [5, 6], status: 'IN_PROGRESS' });
   store.set(`import-recovery:1:${fingerprint}`, { sessionId: 'old' });
   const recovered = await call('findRecoverableImportSession', { fingerprint, serviceDeskId: '1' });
-  assert.deepEqual(recovered.actionableRowNumbers, [5, 6]);
+  assert.deepEqual(await loadRowPlan(call, recovered), [5, 6]);
 });
 
 test('a session is submitted only once every batch is finalised, then the recovery pointer is cleared', async () => {
@@ -81,7 +88,7 @@ test('a session is submitted only once every batch is finalised, then the recove
   assert.equal(store.get('import-session:s2').status, 'SUBMITTED');
   assert.equal(store.get('import-session:s2').linkedRows, 2);
   assert.equal(store.has(`import-recovery:1:${fingerprint}`), false);
-  assert.equal(await call('findRecoverableImportSession', { fingerprint, serviceDeskId: '1' }), null);
+  assert.equal((await call('findRecoverableImportSession', { fingerprint, serviceDeskId: '1' })).id, null);
   assert.equal(site.bulkRequests[0].idempotencyKey, 's2-batch-1');
 });
 
@@ -100,7 +107,30 @@ test('import records expire after 180 days; saved mappings do not', async () => 
 test('an import session keeps its column mapping for resume', async () => {
   await call('startImportSession', { id: 'm1', fingerprint, serviceDeskId: '1', actionableRowNumbers: [2], totalRows: 1, totalBatches: 1, mapping: { emailHeader: 'Mail', displayNameHeader: 'Who', organisationHeader: '' } });
   const recovered = await call('findRecoverableImportSession', { fingerprint, serviceDeskId: '1' });
-  assert.deepEqual(recovered.mapping, { emailHeader: 'Mail', displayNameHeader: 'Who', organisationHeader: '' });
+  assert.deepEqual(recovered.mapping, { emailHeader: 'Mail', displayNameHeader: 'Who', firstNameHeader: '', lastNameHeader: '', organisationHeader: '', detailHeaders: {} });
   await call('startImportSession', { id: 'm2', fingerprint: 'c'.repeat(64), serviceDeskId: '1', actionableRowNumbers: [2], totalRows: 1, totalBatches: 1 });
   assert.equal(store.get('import-session:m2').mapping, null, 'sessions without a mapping store null');
+});
+
+test('resume finds an unfinished session without its recovery pointer, and says why when nothing matches', async () => {
+  await call('startImportSession', { id: 'r1', fingerprint, serviceDeskId: '1', fileName: 'Crew.csv', actionableRowNumbers: [2, 3], totalRows: 2, totalBatches: 1 });
+  store.delete(`import-recovery:1:${fingerprint}`);
+  assert.equal((await call('findRecoverableImportSession', { fingerprint, serviceDeskId: '1' })).id, 'r1');
+  assert.equal(store.get(`import-recovery:1:${fingerprint}`).sessionId, 'r1', 'pointer restored');
+
+  const otherProject = await call('findRecoverableImportSession', { fingerprint, serviceDeskId: '2' });
+  assert.equal(otherProject.id, null);
+  assert.match(otherProject.reason, /another service project \(id 1\)/);
+
+  const edited = await call('findRecoverableImportSession', { fingerprint: 'd'.repeat(64), serviceDeskId: '1', fileName: 'crew.CSV' });
+  assert.equal(edited.id, null);
+  assert.match(edited.reason, /contents are different/);
+
+  assert.deepEqual(await call('findRecoverableImportSession', { fingerprint: 'd'.repeat(64), serviceDeskId: '1', fileName: 'other.csv' }), { id: null, reason: '' });
+});
+
+test('resume lookup reads past the first page of saved sessions', async () => {
+  for (let i = 0; i < 150; i += 1) store.set(`import-session:a${String(i).padStart(3, '0')}`, { id: `a${i}`, fingerprint: 'e'.repeat(64), serviceDeskId: '1', status: 'SUBMITTED', updatedAt: '2026-01-01' });
+  store.set('import-session:zz', { id: 'zz', fingerprint, serviceDeskId: '1', status: 'IN_PROGRESS', updatedAt: '2026-10-05', rowPlanChunks: 0 });
+  assert.equal((await call('findRecoverableImportSession', { fingerprint, serviceDeskId: '1' })).id, 'zz');
 });

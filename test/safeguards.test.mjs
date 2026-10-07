@@ -14,7 +14,7 @@ test('impact counts creates, renames and distinct new organisations; skips and e
     { action: 'SKIP', organisation: 'Gamma', reason: 'Customer already matches. Organisation “Gamma” will be created.' },
     { action: 'ERROR', reason: 'Valid email required' }
   ];
-  assert.deepEqual(importImpact(preview), { create: 5, update: 3, changes: 8, newOrganisations: ['Alpha', 'Beta'] });
+  assert.deepEqual(importImpact(preview), { create: 5, update: 3, renames: 3, changes: 8, newOrganisations: ['Alpha', 'Beta'] });
 });
 
 test('small imports need no confirmation', () => {

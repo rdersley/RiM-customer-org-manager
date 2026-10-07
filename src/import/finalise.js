@@ -11,7 +11,7 @@ const MEMBERSHIP_CHUNK = 50;
 const LOOKUP_CONCURRENCY = 5;
 const experimental = { Accept: 'application/json', 'Content-Type': 'application/json', 'X-ExperimentalApi': 'opt-in' };
 
-async function errorText(response) {
+export async function errorText(response) {
   const text = await response.text();
   try {
     const body = JSON.parse(text);
@@ -21,23 +21,27 @@ async function errorText(response) {
   }
 }
 
-// Finds the account id for an email. Jira's user search matches on email; when the result includes
+// Finds the account for an email. Jira's user search matches on email; when the result includes
 // emailAddress it must match exactly, otherwise a single customer/user result is accepted.
-export async function findAccountId(jira, email) {
+export async function findAccount(jira, email) {
   const res = await jira.requestJira(route`/rest/api/3/user/search?query=${email}&maxResults=10`);
   if (!res.ok) throw new Error(`User lookup failed: ${await errorText(res)}`);
   const users = (await res.json()) || [];
   const accounts = users.filter((u) => u?.accountId && u.accountType !== 'app');
   const wanted = email.trim().toLowerCase();
   const exact = accounts.filter((u) => String(u.emailAddress || '').toLowerCase() === wanted);
-  if (exact.length === 1) return exact[0].accountId;
+  if (exact.length === 1) return exact[0];
   if (exact.length > 1) throw new Error('More than one account uses this email.');
   const withoutEmail = accounts.filter((u) => !u.emailAddress);
-  if (withoutEmail.length === 1 && accounts.length === 1) return withoutEmail[0].accountId;
+  if (withoutEmail.length === 1 && accounts.length === 1) return withoutEmail[0];
   return null;
 }
 
-async function mapLimit(items, limit, fn) {
+export async function findAccountId(jira, email) {
+  return (await findAccount(jira, email))?.accountId || null;
+}
+
+export async function mapLimit(items, limit, fn) {
   const out = new Array(items.length);
   let next = 0;
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
@@ -85,11 +89,17 @@ export async function finaliseRows(jira, { serviceDeskId, rows }) {
     }
   });
 
+  return addToProjectAndOrganisations(jira, serviceDeskId, results);
+}
+
+// Adds the rows that have an account (status 'done', accountId, organizationIds) to the service project and
+// their organisations. Returns the rows without organizationIds, with a row 'failed' if a membership failed.
+export async function addToProjectAndOrganisations(jira, serviceDeskId, results) {
   const found = results.filter((r) => r.status === 'done');
   const deskFailures = await addMembers(jira, route`/rest/servicedeskapi/servicedesk/${serviceDeskId}/customer`, [...new Set(found.map((r) => r.accountId))]);
 
   const byOrg = new Map();
-  for (const r of found) for (const orgId of r.organizationIds) {
+  for (const r of found) for (const orgId of r.organizationIds || []) {
     if (!byOrg.has(orgId)) byOrg.set(orgId, new Set());
     byOrg.get(orgId).add(r.accountId);
   }
@@ -107,7 +117,9 @@ export async function finaliseRows(jira, { serviceDeskId, rows }) {
       const why = orgFailures.get(`${orgId}:${r.accountId}`);
       if (why) problems.push(`Not added to organisation ${orgId}: ${why}`);
     }
-    return problems.length ? { ...r, status: 'failed', error: problems.join(' ') } : r;
+    if (r.detailErrors?.length) problems.push(...r.detailErrors);
+    const { detailErrors, ...rest } = r;
+    return problems.length ? { ...rest, status: 'failed', error: problems.join(' ') } : rest;
   });
 }
 

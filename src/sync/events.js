@@ -5,9 +5,17 @@ import { retrying } from '../http.js';
 import { changelogTouchesField, inScope } from './rules.js';
 import { getConfig, fetchSyncIssue, setOrganisations, evaluateIssue, logCorrection } from './jira.js';
 import { triggerLicenseAllows } from '../license.js';
+import { handleDetailSyncEvent } from '../details-sync/resolvers.js';
 
+// One trigger runs both syncs; a failure in one doesn't stop the other.
 export async function handleIssueEvent(event, context) {
   if (!triggerLicenseAllows(context)) return { skipped: 'unlicensed' };
+  const [organisations, details] = await Promise.allSettled([handleOrgSyncEvent(event), handleDetailSyncEvent(event)]);
+  const outcome = (r) => (r.status === 'fulfilled' ? r.value : { status: 'error', error: String(r.reason?.message || r.reason).slice(0, 300) });
+  return { organisations: outcome(organisations), details: outcome(details) };
+}
+
+export async function handleOrgSyncEvent(event) {
   const config = await getConfig();
   if (!config?.enabled) return { skipped: 'disabled' };
 

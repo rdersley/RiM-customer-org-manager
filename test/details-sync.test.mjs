@@ -133,3 +133,18 @@ test('Check tickets passes the filter to Jira, and the filter options come from 
   assert.deepEqual(options, ['DUB', 'MAD', 'Unknown']);
   await assert.rejects(call('getDetailFilterOptions', { fieldId: 'summary' }), /Choose a field/);
 });
+
+test('Fill in stops starting tickets when its time is up and hands the rest back as pending', async (t) => {
+  customer('qm:a', { CrewCode: ['ALOLUC'], Base: ['MAD'] });
+  for (const id of [11, 12, 13, 14, 15, 16]) ticket(id, 'qm:a');
+  const realNow = Date.now;
+  let calls = 0;
+  t.mock.method(Date, 'now', () => (calls++ === 0 ? realNow() : realNow() + 60000));
+  const r = await call('applyDetailSync', { issueIds: ['11', '12', '13', '14', '15', '16'] });
+  t.mock.restoreAll();
+  assert.deepEqual([...r.pending].sort(), ['11', '12', '13', '14', '15', '16']);
+  assert.equal(r.updated.length, 0);
+  const again = await call('applyDetailSync', { issueIds: r.pending });
+  assert.equal(again.updated.length, 6, 'sent again, they are filled');
+  assert.deepEqual(again.pending, []);
+});

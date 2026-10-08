@@ -108,17 +108,30 @@ export default function DetailSync({ invoke, serviceDesks, readOnly }) {
     const result = { updated: 0, unchanged: 0, failed: [] };
     setConfirm(false);
     setUpdating({ done: 0, total: items.length, ...result });
-    for (let i = 0; i < items.length; i += CHUNK) {
-      const part = items.slice(i, i + CHUNK);
+    // Each call returns the tickets it had no time for (`pending`); they go back to the front of the queue.
+    const queue = [...items];
+    let done = 0;
+    let stalled = 0;
+    while (queue.length) {
+      const part = queue.splice(0, CHUNK);
       try {
         const r = await invoke('applyDetailSync', { issueIds: part.map((x) => x.id) });
+        const pending = new Set((r.pending || []).map(String));
         result.updated += r.updated.length;
         result.unchanged += r.unchanged.length;
         result.failed.push(...r.failed.map((f) => ({ ...f, key: f.key || part.find((x) => x.id === f.id)?.key || f.id })));
+        queue.unshift(...part.filter((x) => pending.has(String(x.id))));
+        done += part.length - pending.size;
+        stalled = pending.size === part.length ? stalled + 1 : 0;
+        if (stalled >= 3) {
+          result.failed.push(...queue.splice(0).map((x) => ({ key: x.key, message: 'Jira was too slow to update this ticket; check again later.' })));
+        }
       } catch (e) {
+        // A call that times out may still have filled some of its tickets; checking again finds the rest.
         result.failed.push(...part.map((x) => ({ key: x.key, message: e.message })));
+        done += part.length;
       }
-      setUpdating({ done: Math.min(i + CHUNK, items.length), total: items.length, ...result });
+      setUpdating({ done: Math.min(done, items.length), total: items.length, ...result });
     }
     setUpdating((u) => ({ ...u, finished: true }));
     setScan((s) => ({ ...s, needsChange: [] }));
@@ -221,7 +234,7 @@ export default function DetailSync({ invoke, serviceDesks, readOnly }) {
         </>}
         {updating && (updating.finished
           ? <Notice kind={updating.failed.length ? 'warning' : 'success'} title={updating.failed.length ? 'Finished with problems' : 'Tickets filled in'}>
-            Updated {plural(updating.updated, 'ticket')}. {updating.unchanged ? `${plural(updating.unchanged, 'ticket')} no longer needed it. ` : ''}{updating.failed.length ? `${plural(updating.failed.length, 'ticket')} had problems: ${updating.failed.slice(0, 5).map((f) => `${f.key} (${f.message})`).join('; ')}` : ''}
+            Updated {plural(updating.updated, 'ticket')}. {updating.unchanged ? `${plural(updating.unchanged, 'ticket')} no longer needed it. ` : ''}{updating.failed.length ? `${plural(updating.failed.length, 'ticket')} had problems: ${updating.failed.slice(0, 5).map((f) => `${f.key} (${f.message})`).join('; ')}` : ''}{updating.failed.length ? ' Some of these may already be filled; click Check tickets again to see what is left.' : ''}
           </Notice>
           : <Loading text={`Filling in tickets… ${updating.done.toLocaleString()} of ${updating.total.toLocaleString()}.`}/>)}
       </div>

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { site, resetSite, addIssue, SECOND_FIELD } from './mocks/api.mjs';
 import { store, resetStore } from './mocks/kvs.mjs';
 import { handler, handleIssueEvent } from '../src/index.js';
-import { evaluateTicket, readCustomerDetails, detailsJql, normaliseDetailConfig, fieldValue } from '../src/details-sync/rules.js';
+import { evaluateTicket, readCustomerDetails, detailsJql, normaliseDetailConfig, normaliseScanFilter, fieldValue } from '../src/details-sync/rules.js';
 
 const DEV = { environmentType: 'DEVELOPMENT' };
 const call = (name, payload, context = DEV) => handler[name]({ payload, context });
@@ -115,4 +115,21 @@ test('a new ticket is filled from its reporter; an update only matters when the 
   await call('saveDetailSyncConfig', settings({ enabled: false }));
   ticket(12, 'qm:a');
   assert.equal((await handleIssueEvent({ eventType: 'avi:jira:created:issue', issue: { id: '12', fields: { project: { key: 'SD' } } } }, {})).details.skipped, 'disabled');
+});
+
+test('rules: check filters add a Created range (end day included) and field options to the search', () => {
+  const jql = detailsJql(config, { createdFrom: '2026-09-01', createdTo: '2026-09-30', fieldFilters: [{ fieldId: 'customfield_10090', values: ['Ryanair', 'Buzz "Air"'] }, { fieldId: 'customfield_10091', values: [] }] });
+  assert.match(jql, / AND created >= "2026-09-01" AND created < "2026-10-01" AND cf\[10090\] in \("Ryanair", "Buzz \\"Air\\""\) ORDER BY key ASC$/);
+  assert.doesNotMatch(jql, /10091/, 'a field filter with no options picked is ignored');
+  assert.equal(detailsJql(config, {}), detailsJql(config), 'no filter, same search as before');
+  assert.throws(() => normaliseScanFilter({ createdFrom: '2026-10-02', createdTo: '2026-10-01' }), /after the "Created to"/);
+  assert.deepEqual(normaliseScanFilter({ createdFrom: 'yesterday', fieldFilters: [{ fieldId: 'summary', values: ['x'] }] }), { createdFrom: '', createdTo: '', fieldFilters: [] }, 'bad input is dropped, never put into JQL');
+});
+
+test('Check tickets passes the filter to Jira, and the filter options come from the saved projects', async () => {
+  await call('scanDetailSync', { filter: { createdFrom: '2026-09-01', fieldFilters: [{ fieldId: BASE, values: ['MAD'] }] } });
+  assert.match(site.lastJql, /created >= "2026-09-01" AND cf\[\d+\] in \("MAD"\)/);
+  const { options } = await call('getDetailFilterOptions', { fieldId: BASE });
+  assert.deepEqual(options, ['DUB', 'MAD', 'Unknown']);
+  await assert.rejects(call('getDetailFilterOptions', { fieldId: 'summary' }), /Choose a field/);
 });

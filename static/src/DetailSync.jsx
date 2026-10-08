@@ -91,14 +91,22 @@ export default function DetailSync({ invoke, serviceDesks, readOnly }) {
     setUpdating(null);
     try {
       let nextPageToken = null;
+      let waits = 0;
       for (let calls = 0; ; calls += 1) {
         if (calls >= 2000) throw new Error('Ticket check safety limit reached.');
         const r = await invoke('scanDetailSync', { nextPageToken, filter: activeFilter });
         for (const k of ['checked', 'correct', 'noDetails', 'kept']) totals[k] += r[k] || 0;
         totals.needsChange.push(...(r.needsChange || []));
-        setScan({ running: !r.complete, ...totals, filterSummary });
-        if (r.complete) break;
+        if (r.complete) { setScan({ running: false, ...totals, filterSummary }); break; }
         nextPageToken = r.nextPageToken;
+        if (r.rateLimited) {
+          // Jira asked the app to slow down: wait, then carry on from the same page.
+          waits += 1;
+          if (waits > 20) throw new Error('Jira kept asking the app to slow down. Wait a few minutes, then check again (a narrower date range helps).');
+          setScan({ running: true, waiting: true, ...totals, filterSummary });
+          await new Promise((resolve) => setTimeout(resolve, 30000));
+        } else waits = 0;
+        setScan({ running: true, ...totals, filterSummary });
       }
     } catch (e) { setScan((s) => ({ ...s, running: false, error: e.message })); }
   }
@@ -218,7 +226,7 @@ export default function DetailSync({ invoke, serviceDesks, readOnly }) {
           <div className="nq-stat"><strong className="nq-stat__value">{scan.noDetails.toLocaleString()}</strong><span className="nq-stat__label">Reporter has no details</span></div>
         </div>}
         {scan && !scan.running && !scan.error && <p className="nq-help">Last check: {scan.filterSummary ? `tickets ${scan.filterSummary}` : 'all tickets in the saved projects'}.</p>}
-        {scan?.running && <Loading text={`Checking tickets… ${scan.checked.toLocaleString()} so far.`}/>}
+        {scan?.running && <Loading text={scan.waiting ? `Jira asked the app to slow down. Carrying on in 30 seconds… (${scan.checked.toLocaleString()} checked so far)` : `Checking tickets… ${scan.checked.toLocaleString()} so far.`}/>}
         {scan && !scan.running && scan.needsChange.length > 0 && <>
           <div className="nq-table-wrap"><table className="nq-table">
             <thead><tr><th>Ticket</th><th>Changes</th></tr></thead>

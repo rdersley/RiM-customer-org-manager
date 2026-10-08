@@ -54,12 +54,14 @@ export function evaluateTicket({ fields, details, config }) {
   return { status: changes.length ? 'needs-change' : 'correct', changes, kept };
 }
 
-// The value to send to Jira for a field: a select needs one of its options (matched ignoring case);
-// returns { value } or { error }.
+// The value to send to Jira for a field. A select gets the saved option that matches (ignoring case).
+// A value missing from the saved options is still sent, marked `unverified`: the options were read when
+// the settings were saved and can be out of date (on the work site "VHQ" was a real Base option that the
+// saved list didn't have), so Jira decides. Returns { value, unverified? }.
 export function fieldValue(mapping, text) {
   if (mapping.fieldType !== 'select') return { value: text };
   const option = (mapping.options || []).find((o) => norm(o) === norm(text));
-  return option ? { value: { value: option } } : { error: `"${text}" isn't an option of ${mapping.fieldName || mapping.fieldId}` };
+  return option ? { value: { value: option } } : { value: { value: String(text).trim() }, unverified: true };
 }
 
 export function normaliseDetailConfig(input) {

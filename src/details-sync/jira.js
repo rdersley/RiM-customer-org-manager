@@ -60,17 +60,34 @@ export async function evaluateDetailTicket(ticket, config, detailsOf) {
 // Sets the changed fields in one edit. A select value that isn't an option is skipped and reported.
 export async function applyTicketChanges(jira, ticket, config, changes) {
   const byField = new Map(config.mappings.map((m) => [m.fieldId, m]));
+  const name = (id) => byField.get(id)?.detailName || id;
   const update = {};
+  const unverified = [];
   const problems = [];
   for (const c of changes) {
     const r = fieldValue(byField.get(c.fieldId) || {}, c.to);
-    if (r.error) problems.push(r.error); else update[c.fieldId] = r.value;
+    update[c.fieldId] = r.value;
+    if (r.unverified) unverified.push(c);
+  }
+  const put = (fields) => jira.requestJira(route`/rest/api/3/issue/${ticket.id}`, { method: 'PUT', headers, body: JSON.stringify({ fields }) });
+  if (!Object.keys(update).length) return { set: [], problems };
+  const res = await put(update);
+  if (res.status === 204) return { set: Object.keys(update).map(name), problems };
+  // Jira refused the update. If a value that wasn't in the saved options was part of it, set the rest
+  // without it and report Jira's reason for that field; otherwise it's a real failure.
+  let refusal;
+  try { await json(res, `Updating ${ticket.key}`); } catch (e) { refusal = e; }
+  if (!unverified.length || res.status !== 400) throw refusal;
+  for (const c of unverified) {
+    delete update[c.fieldId];
+    const m = byField.get(c.fieldId) || {};
+    problems.push(`"${c.to}" was refused for ${m.fieldName || c.fieldId}: ${String(refusal?.message || '').replace(/^Updating [^:]+ failed: /, '')}`);
   }
   if (Object.keys(update).length) {
-    const res = await jira.requestJira(route`/rest/api/3/issue/${ticket.id}`, { method: 'PUT', headers, body: JSON.stringify({ fields: update }) });
-    if (res.status !== 204) await json(res, `Updating ${ticket.key}`);
+    const retry = await put(update);
+    if (retry.status !== 204) await json(retry, `Updating ${ticket.key}`);
   }
-  return { set: Object.keys(update).map((id) => byField.get(id)?.detailName || id), problems };
+  return { set: Object.keys(update).map(name), problems };
 }
 
 export async function logDetailChange(entry) {

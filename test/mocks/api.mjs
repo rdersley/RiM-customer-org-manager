@@ -27,6 +27,7 @@ export function resetSite(count = 0) {
   site.detailFields = null; // customer detail field definitions (CSM); null = the site has none (404)
   site.issues = new Map();
   site.issueEdits = [];
+  site.selectOptions = {}; // fieldId -> the options Jira accepts on an issue edit (unset = anything)
   site.failIssueIds = new Set();
   // Service projects, and the organisations added to each (Jira only accepts those on a ticket).
   site.serviceDesks = [{ id: '1', projectKey: 'SD', projectName: 'Service desk' }, { id: '2', projectKey: 'OPS', projectName: 'Operations' }];
@@ -119,6 +120,10 @@ async function requestJira(as, path, options = {}) {
       const allowed = site.projectOrgs.get(issue.fields.project.key);
       if (fields[ORG_FIELD] && allowed && fields[ORG_FIELD].some((id) => !allowed.includes(String(id)))) {
         return json({ errorMessages: ['Invalid organization ids specified.'], errors: { [ORG_FIELD]: 'Specify a valid value for Organizations ID' } }, 400);
+      }
+      for (const [id, value] of Object.entries(fields)) {
+        const allowedOptions = site.selectOptions?.[id];
+        if (allowedOptions && value?.value != null && !allowedOptions.includes(value.value)) return json({ errorMessages: [], errors: { [id]: `Option value '${value.value}' is not valid` } }, 400);
       }
       if (fields[ORG_FIELD]) issue.fields[ORG_FIELD] = fields[ORG_FIELD].map((id) => ({ id, name: `Org ${id}` }));
       for (const [id, value] of Object.entries(fields)) if (id !== ORG_FIELD) issue.fields[id] = value;

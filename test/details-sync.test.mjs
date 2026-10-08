@@ -26,6 +26,7 @@ beforeEach(async () => {
   resetStore();
   site.createmeta = { SD: [{ id: '1', fields: [{ fieldId: BASE, allowedValues: [{ value: 'MAD' }, { value: 'DUB' }, { value: 'Unknown' }] }] }] };
   await call('saveDetailSyncConfig', settings());
+  site.selectOptions = { [BASE]: ['MAD', 'DUB', 'Unknown', 'VHQ'] };
   site.requests = [];
 });
 
@@ -45,7 +46,7 @@ test('rules: reads the common shapes of customer details, and matches select opt
   assert.deepEqual(readCustomerDetails([{ name: 'Base', values: ['MAD'] }, { fieldName: 'CrewCode', value: 'X1' }, { name: 'Empty', values: [] }]), { Base: 'MAD', CrewCode: 'X1' });
   assert.deepEqual(readCustomerDetails({ details: [{ name: 'Base', values: ['DUB'] }] }), { Base: 'DUB' });
   assert.deepEqual(fieldValue(config.mappings[1], 'mad'), { value: { value: 'MAD' } });
-  assert.match(fieldValue(config.mappings[1], 'STN').error, /isn't an option/);
+  assert.deepEqual(fieldValue(config.mappings[1], 'STN'), { value: { value: 'STN' }, unverified: true }, 'not in the saved options: still sent, Jira decides');
   assert.deepEqual(fieldValue(config.mappings[0], 'X1'), { value: 'X1' });
 });
 
@@ -89,9 +90,9 @@ test('check then update: fills blanks and placeholders from the reporter, keeps 
   assert.equal(site.issues.get('2').fields[CREW], 'ALOLUC');
   assert.equal(site.issues.get('3').fields[CREW], 'SOMEONE', 'a real value is kept');
   assert.equal(site.issues.get('4').fields[CREW], 'BBB');
-  assert.equal(site.issues.get('4').fields[BASE], null, 'STN is not a Base option, so it is skipped');
+  assert.equal(site.issues.get('4').fields[BASE], null, 'Jira refuses STN, so Base is left alone and CrewCode is still set');
   assert.deepEqual(r.failed.map((f) => f.key), ['SD-4']);
-  assert.match(r.failed[0].message, /"STN" isn't an option/);
+  assert.match(r.failed[0].message, /"STN" was refused for .*Option value 'STN' is not valid/);
 
   const log = await call('getDetailSyncLog', {});
   assert.equal(log.length, 3);
@@ -147,4 +148,32 @@ test('Fill in stops starting tickets when its time is up and hands the rest back
   const again = await call('applyDetailSync', { issueIds: r.pending });
   assert.equal(again.updated.length, 6, 'sent again, they are filled');
   assert.deepEqual(again.pending, []);
+});
+
+test('a Base value missing from the saved options is still set when Jira accepts it (VHQ on the work site)', async () => {
+  customer('qm:v', { CrewCode: ['VHQ1'], Base: ['VHQ'] });
+  ticket(21, 'qm:v');
+  const r = await call('applyDetailSync', { issueIds: ['21'] });
+  assert.deepEqual(r.updated, ['SD-21']);
+  assert.deepEqual(r.failed, []);
+  assert.deepEqual(site.issues.get('21').fields[BASE], { value: 'VHQ' });
+});
+
+test('a rate-limited check hands back the page it was on, and carrying on from there finishes it', async () => {
+  const { setSleepForTests } = await import('../src/http.js');
+  setSleepForTests(async () => {});
+  customer('qm:a', { CrewCode: ['ALOLUC'], Base: ['MAD'] });
+  ticket(31, 'qm:a');
+  ticket(32, 'qm:a');
+  site.throttle = 10;
+  site.throttlePath = '/jsm/csm/api/v1/customer/';
+  const first = await call('scanDetailSync', {});
+  assert.equal(first.rateLimited, true);
+  assert.equal(first.complete, false);
+  assert.equal(first.checked, 0, 'the interrupted page is not counted');
+  site.throttle = 0;
+  const rest = await call('scanDetailSync', { nextPageToken: first.nextPageToken });
+  assert.equal(rest.complete, true);
+  assert.equal(rest.checked, 2);
+  assert.equal(rest.needsChange.length, 2);
 });

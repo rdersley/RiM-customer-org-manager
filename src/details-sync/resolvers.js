@@ -13,7 +13,7 @@ import {
 
 const SCAN_BUDGET_MS = 15000;
 const SCAN_PAGE_SIZE = 50;
-const LOOKUP_CONCURRENCY = 5;
+const LOOKUP_CONCURRENCY = 3;
 const CORRECT_MAX_PER_CALL = 25;
 // Forge stops a resolver at 25 s. On the work site 25 tickets one by one took longer, so each call
 // works on a few tickets at once, starts no new ticket after this budget, and returns the rest as
@@ -58,9 +58,19 @@ export function registerDetailSyncResolvers(secureDefine) {
     const needsChange = [];
     let complete = false;
     while (Date.now() < deadline) {
-      const body = await searchDetailPage(jira, config, nextPageToken, SCAN_PAGE_SIZE, filter);
-      const tickets = (body?.issues || []).map(toDetailTicket);
-      const results = await mapLimit(tickets, LOOKUP_CONCURRENCY, (t) => evaluateDetailTicket(t, config, detailsOf));
+      let body;
+      let tickets;
+      let results;
+      try {
+        body = await searchDetailPage(jira, config, nextPageToken, SCAN_PAGE_SIZE, filter);
+        tickets = (body?.issues || []).map(toDetailTicket);
+        results = await mapLimit(tickets, LOOKUP_CONCURRENCY, (t) => evaluateDetailTicket(t, config, detailsOf));
+      } catch (e) {
+        // Jira is rate-limiting the app even after the retries in http.js. Hand back what's done and the
+        // page still to do; the page waits and carries on from there.
+        if (e?.status === 429 || /\b429\b/.test(String(e?.message))) return { ...totals, needsChange, nextPageToken, complete: false, rateLimited: true };
+        throw e;
+      }
       tickets.forEach((t, i) => {
         const r = results[i];
         totals.checked += 1;

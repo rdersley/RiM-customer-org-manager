@@ -4,6 +4,10 @@ import { Card, Button, Notice, EmptyState, Loading, Lozenge, Field } from '@reta
 const sourceLabel = { created: ['New ticket', 'success'], 'reporter-changed': ['Reporter changed', 'info'], backfill: ['Bulk update', 'discovery'], failed: ['Failed', 'danger'] };
 const CHUNK = 25;
 const plural = (n, one, many = `${one}s`) => `${Number(n).toLocaleString()} ${n === 1 ? one : many}`;
+const isoDay = (d) => d.toISOString().slice(0, 10);
+const daysAgo = (n) => isoDay(new Date(Date.now() - n * 86400000));
+const DATE_PRESETS = [['Last 7 days', 7], ['Last 30 days', 30], ['Last 90 days', 90]];
+const EMPTY_FILTER = { createdFrom: '', createdTo: '', fieldFilters: [] };
 
 /**
  * Ticket details tab: copies the reporter's customer details (e.g. CrewCode, Base) into ticket fields.
@@ -19,6 +23,9 @@ export default function DetailSync({ invoke, serviceDesks, readOnly }) {
   const [confirm, setConfirm] = useState(false);
   const [updating, setUpdating] = useState(null);
   const [log, setLog] = useState([]);
+  // Limits for Check tickets (not saved): a Created range and select-field options.
+  const [filter, setFilter] = useState(EMPTY_FILTER);
+  const [filterOptions, setFilterOptions] = useState({});
 
   async function load() {
     try {
@@ -61,19 +68,35 @@ export default function DetailSync({ invoke, serviceDesks, readOnly }) {
     finally { setSaving(false); }
   }
 
+  const setFilterRow = (i, patch) => setFilter((f) => ({ ...f, fieldFilters: f.fieldFilters.map((x, j) => (j === i ? { ...x, ...patch } : x)) }));
+  async function chooseFilterField(i, fieldId) {
+    setFilterRow(i, { fieldId, values: [] });
+    if (!fieldId || filterOptions[fieldId]) return;
+    setFilterOptions((o) => ({ ...o, [fieldId]: { loading: true, options: [] } }));
+    try {
+      const r = await invoke('getDetailFilterOptions', { fieldId });
+      setFilterOptions((o) => ({ ...o, [fieldId]: { options: r.options || [] } }));
+    } catch (e) { setFilterOptions((o) => ({ ...o, [fieldId]: { options: [], error: e.message } })); }
+  }
+  const activeFilter = { ...filter, fieldFilters: filter.fieldFilters.filter((x) => x.fieldId && x.values.length) };
+  const filterSummary = [
+    filter.createdFrom || filter.createdTo ? `created ${filter.createdFrom ? `from ${filter.createdFrom}` : ''}${filter.createdFrom && filter.createdTo ? ' ' : ''}${filter.createdTo ? `to ${filter.createdTo}` : ''}` : '',
+    ...activeFilter.fieldFilters.map((x) => `${setup?.ticketFields.find((f) => f.id === x.fieldId)?.name || x.fieldId}: ${x.values.join(', ')}`)
+  ].filter(Boolean).join(' · ');
+
   async function runScan() {
     const totals = { checked: 0, correct: 0, noDetails: 0, kept: 0, needsChange: [] };
-    setScan({ running: true, ...totals });
+    setScan({ running: true, ...totals, filterSummary });
     setConfirm(false);
     setUpdating(null);
     try {
       let nextPageToken = null;
       for (let calls = 0; ; calls += 1) {
         if (calls >= 2000) throw new Error('Ticket check safety limit reached.');
-        const r = await invoke('scanDetailSync', { nextPageToken });
+        const r = await invoke('scanDetailSync', { nextPageToken, filter: activeFilter });
         for (const k of ['checked', 'correct', 'noDetails', 'kept']) totals[k] += r[k] || 0;
         totals.needsChange.push(...(r.needsChange || []));
-        setScan({ running: !r.complete, ...totals });
+        setScan({ running: !r.complete, ...totals, filterSummary });
         if (r.complete) break;
         nextPageToken = r.nextPageToken;
       }
@@ -141,6 +164,39 @@ export default function DetailSync({ invoke, serviceDesks, readOnly }) {
     <Card title="Existing tickets" description="Finds tickets in the selected projects where a field is empty or holds a placeholder, and the reporter has that detail. Checking changes nothing." actions={<Button appearance="subtle" disabled={scan?.running || !saved?.mappings?.length} onClick={runScan}>{scan?.running ? 'Checking…' : 'Check tickets'}</Button>}>
       <div className="nq-stack">
         {!saved?.mappings?.length && <p className="nq-help">Save the fields and projects first.</p>}
+        <div className="nq-grid nq-grid--3">
+          <Field label="Created from" htmlFor="detail-created-from"><input id="detail-created-from" type="date" className="nq-input" value={filter.createdFrom} onChange={(e) => setFilter((f) => ({ ...f, createdFrom: e.target.value }))}/></Field>
+          <Field label="Created to" htmlFor="detail-created-to" help="Includes this day."><input id="detail-created-to" type="date" className="nq-input" value={filter.createdTo} onChange={(e) => setFilter((f) => ({ ...f, createdTo: e.target.value }))}/></Field>
+          <Field label="Quick range">
+            <div className="nq-inline">
+              {DATE_PRESETS.map(([label, days]) => <Button key={days} appearance="subtle" small onClick={() => setFilter((f) => ({ ...f, createdFrom: daysAgo(days), createdTo: '' }))}>{label}</Button>)}
+            </div>
+          </Field>
+        </div>
+        {filter.fieldFilters.map((x, i) => {
+          const opts = filterOptions[x.fieldId];
+          return <div key={i} className="nq-grid nq-grid--3">
+            <Field label={i === 0 ? 'Only tickets where' : 'and where'} htmlFor={`detail-filter-field-${i}`}>
+              <select id={`detail-filter-field-${i}`} className="nq-select" value={x.fieldId} onChange={(e) => chooseFilterField(i, e.target.value)}>
+                <option value="">Choose a dropdown field…</option>
+                {setup.ticketFields.filter((f) => f.type === 'select').map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+              </select>
+            </Field>
+            <Field label="is one of" htmlFor={`detail-filter-values-${i}`} help={opts?.error || (opts?.loading ? 'Loading options…' : (x.fieldId && !opts?.options?.length ? 'No options found in the saved projects.' : 'Hold Ctrl to pick several.'))}>
+              <select id={`detail-filter-values-${i}`} className="nq-select" multiple size={Math.min(6, Math.max(3, opts?.options?.length || 3))} value={x.values} disabled={!x.fieldId} onChange={(e) => setFilterRow(i, { values: [...e.target.selectedOptions].map((o) => o.value) })}>
+                {(opts?.options || []).map((o) => <option key={o} value={o}>{o}</option>)}
+              </select>
+            </Field>
+            <Field label=" "><Button appearance="subtle" small onClick={() => setFilter((f) => ({ ...f, fieldFilters: f.fieldFilters.filter((_, j) => j !== i) }))}>Remove</Button></Field>
+          </div>;
+        })}
+        <div className="nq-spread">
+          <div className="nq-inline">
+            {filter.fieldFilters.length < 5 && <Button appearance="subtle" small onClick={() => setFilter((f) => ({ ...f, fieldFilters: [...f.fieldFilters, { fieldId: '', values: [] }] }))}>Add field filter</Button>}
+            {(filterSummary || filter.fieldFilters.length > 0) && <Button appearance="subtle" small onClick={() => setFilter(EMPTY_FILTER)}>Clear filters</Button>}
+          </div>
+          <p className="nq-help">{filterSummary ? `Checks only tickets ${filterSummary}.` : 'No filters: checks every matching ticket in the saved projects.'}</p>
+        </div>
         {scan?.error && <Notice kind="error" title="Couldn't finish checking tickets">{scan.error}</Notice>}
         {scan && <div className="nq-stats">
           <div className="nq-stat"><strong className="nq-stat__value">{scan.checked.toLocaleString()}</strong><span className="nq-stat__label">Checked</span></div>
@@ -148,6 +204,7 @@ export default function DetailSync({ invoke, serviceDesks, readOnly }) {
           <div className="nq-stat"><strong className="nq-stat__value">{scan.kept.toLocaleString()}</strong><span className="nq-stat__label">Other value kept</span></div>
           <div className="nq-stat"><strong className="nq-stat__value">{scan.noDetails.toLocaleString()}</strong><span className="nq-stat__label">Reporter has no details</span></div>
         </div>}
+        {scan && !scan.running && !scan.error && <p className="nq-help">Last check: {scan.filterSummary ? `tickets ${scan.filterSummary}` : 'all tickets in the saved projects'}.</p>}
         {scan?.running && <Loading text={`Checking tickets… ${scan.checked.toLocaleString()} so far.`}/>}
         {scan && !scan.running && scan.needsChange.length > 0 && <>
           <div className="nq-table-wrap"><table className="nq-table">

@@ -97,7 +97,35 @@ const jqlString = (s) => `"${String(s).replace(/["\\]/g, '\\$&')}"`;
 
 // Tickets worth checking: in the projects, with a reporter, and at least one mapped field empty or
 // holding a placeholder. Text fields use ~ (contains), so the rules re-check the exact value.
-export function detailsJql(config) {
+// Optional limits for one Check tickets run (not saved): a Created date range and select-field options.
+// { createdFrom, createdTo: 'YYYY-MM-DD' (inclusive), fieldFilters: [{ fieldId, values: [option] }] }.
+const isDate = (v) => /^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(Date.parse(`${v}T00:00:00Z`));
+export function normaliseScanFilter(input) {
+  const f = input || {};
+  const createdFrom = isDate(String(f.createdFrom ?? '')) ? String(f.createdFrom) : '';
+  const createdTo = isDate(String(f.createdTo ?? '')) ? String(f.createdTo) : '';
+  if (createdFrom && createdTo && createdFrom > createdTo) throw new Error('The "Created from" date is after the "Created to" date.');
+  const fieldFilters = [];
+  for (const ff of (Array.isArray(f.fieldFilters) ? f.fieldFilters : []).slice(0, 5)) {
+    const fieldId = /^customfield_\d+$/.test(String(ff?.fieldId ?? '')) ? String(ff.fieldId) : '';
+    const values = [...new Set((Array.isArray(ff?.values) ? ff.values : []).map((v) => String(v ?? '').trim().slice(0, 255)).filter(Boolean))].slice(0, 100);
+    if (fieldId && values.length) fieldFilters.push({ fieldId, values });
+  }
+  return { createdFrom, createdTo, fieldFilters };
+}
+
+const nextDay = (date) => new Date(Date.parse(`${date}T00:00:00Z`) + 86400000).toISOString().slice(0, 10);
+
+export function filterJql(filter) {
+  const f = normaliseScanFilter(filter);
+  const parts = [];
+  if (f.createdFrom) parts.push(`created >= ${jqlString(f.createdFrom)}`);
+  if (f.createdTo) parts.push(`created < ${jqlString(nextDay(f.createdTo))}`);
+  for (const ff of f.fieldFilters) parts.push(`cf[${ff.fieldId.replace('customfield_', '')}] in (${ff.values.map(jqlString).join(', ')})`);
+  return parts.map((p) => ` AND ${p}`).join('');
+}
+
+export function detailsJql(config, filter = null) {
   const projects = config.projectKeys.map(jqlString).join(', ');
   const conditions = config.mappings.map((m) => {
     const cf = `cf[${m.fieldId.replace('customfield_', '')}]`;
@@ -106,7 +134,7 @@ export function detailsJql(config) {
     if (m.fieldType === 'select') return `${cf} IS EMPTY OR ${cf} in (${ph.map(jqlString).join(', ')})`;
     return `${cf} IS EMPTY OR ${ph.map((p) => `${cf} ~ ${jqlString(`"${p}"`)}`).join(' OR ')}`;
   });
-  return `project in (${projects}) AND reporter IS NOT EMPTY AND (${conditions.join(' OR ')}) ORDER BY key ASC`;
+  return `project in (${projects}) AND reporter IS NOT EMPTY AND (${conditions.join(' OR ')})${filterJql(filter)} ORDER BY key ASC`;
 }
 
 // True when an update event changed the reporter.

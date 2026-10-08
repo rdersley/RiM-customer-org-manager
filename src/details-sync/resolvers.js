@@ -5,7 +5,7 @@ import { kvs } from '@forge/kvs';
 import { retrying } from '../http.js';
 import { detectFields, fieldOptions } from '../sync/jira.js';
 import { mapLimit } from '../import/finalise.js';
-import { normaliseDetailConfig, reporterChanged } from './rules.js';
+import { normaliseDetailConfig, normaliseScanFilter, reporterChanged } from './rules.js';
 import {
   DETAIL_SYNC_CONFIG_KEY, getDetailConfig, fetchDetailTicket, toDetailTicket, evaluateDetailTicket,
   applyTicketChanges, logDetailChange, recentDetailChanges, searchDetailPage, detailsCache
@@ -46,13 +46,14 @@ export function registerDetailSyncResolvers(secureDefine) {
     if (!config?.mappings?.length || !config?.projectKeys?.length) throw new Error('Save the field mappings and projects first.');
     const jira = retrying(api.asUser());
     const detailsOf = detailsCache(jira);
+    const filter = normaliseScanFilter(payload?.filter);
     const deadline = Date.now() + SCAN_BUDGET_MS;
     let nextPageToken = payload?.nextPageToken || null;
     const totals = { checked: 0, correct: 0, noDetails: 0, kept: 0 };
     const needsChange = [];
     let complete = false;
     while (Date.now() < deadline) {
-      const body = await searchDetailPage(jira, config, nextPageToken, SCAN_PAGE_SIZE);
+      const body = await searchDetailPage(jira, config, nextPageToken, SCAN_PAGE_SIZE, filter);
       const tickets = (body?.issues || []).map(toDetailTicket);
       const results = await mapLimit(tickets, LOOKUP_CONCURRENCY, (t) => evaluateDetailTicket(t, config, detailsOf));
       tickets.forEach((t, i) => {
@@ -97,6 +98,14 @@ export function registerDetailSyncResolvers(secureDefine) {
   }, { write: true });
 
   secureDefine('getDetailSyncLog', async () => recentDetailChanges(100));
+
+  // The options of a select field in the saved projects, for the Check tickets filters.
+  secureDefine('getDetailFilterOptions', async ({ payload }) => {
+    const fieldId = String(payload?.fieldId || '');
+    if (!/^customfield_\d+$/.test(fieldId)) throw new Error('Choose a field.');
+    const config = await getDetailConfig();
+    return fieldOptions(retrying(api.asUser()), fieldId, config?.projectKeys || []);
+  });
 }
 
 // New tickets, and tickets whose reporter changed, in the selected projects. Runs as the app.

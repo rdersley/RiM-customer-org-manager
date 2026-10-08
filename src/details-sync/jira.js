@@ -84,8 +84,8 @@ export async function recentDetailChanges(limit = 100) {
   return (result.results || []).map((r) => r.value).sort((a, b) => String(b.at).localeCompare(String(a.at)));
 }
 
-export async function searchDetailPage(jira, config, nextPageToken, maxResults = 50) {
-  const body = { jql: detailsJql(config), fields: fieldList(config), maxResults };
+export async function searchDetailPage(jira, config, nextPageToken, maxResults = 50, filter = null) {
+  const body = { jql: detailsJql(config, filter), fields: fieldList(config), maxResults };
   if (nextPageToken) body.nextPageToken = nextPageToken;
   return json(await jira.requestJira(route`/rest/api/3/search/jql`, { method: 'POST', headers, body: JSON.stringify(body) }), 'Searching tickets');
 }

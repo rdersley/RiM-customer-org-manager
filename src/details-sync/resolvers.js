@@ -15,6 +15,11 @@ const SCAN_BUDGET_MS = 15000;
 const SCAN_PAGE_SIZE = 50;
 const LOOKUP_CONCURRENCY = 5;
 const CORRECT_MAX_PER_CALL = 25;
+// Forge stops a resolver at 25 s. On the work site 25 tickets one by one took longer, so each call
+// works on a few tickets at once, starts no new ticket after this budget, and returns the rest as
+// `pending` for the page to send again.
+const APPLY_BUDGET_MS = 15000;
+const APPLY_CONCURRENCY = 4;
 
 export function registerDetailSyncResolvers(secureDefine) {
   secureDefine('getDetailSyncSetup', async () => {
@@ -78,14 +83,17 @@ export function registerDetailSyncResolvers(secureDefine) {
     if (ids.length > CORRECT_MAX_PER_CALL) throw new Error(`Update at most ${CORRECT_MAX_PER_CALL} tickets per call.`);
     const jira = retrying(api.asUser());
     const detailsOf = detailsCache(jira);
+    const deadline = Date.now() + (Number(payload?.budgetMs) > 0 ? Math.min(Number(payload.budgetMs), APPLY_BUDGET_MS) : APPLY_BUDGET_MS);
     const updated = [];
     const unchanged = [];
     const failed = [];
-    for (const id of ids) {
+    const pending = [];
+    await mapLimit(ids, APPLY_CONCURRENCY, async (id) => {
+      if (Date.now() >= deadline) { pending.push(id); return; }
       try {
         const ticket = await fetchDetailTicket(jira, id, config);
         const r = await evaluateDetailTicket(ticket, config, detailsOf);
-        if (r.status !== 'needs-change') { unchanged.push(ticket.key); continue; }
+        if (r.status !== 'needs-change') { unchanged.push(ticket.key); return; }
         const { set, problems } = await applyTicketChanges(jira, ticket, config, r.changes);
         await logDetailChange({ issueKey: ticket.key, fields: set, source: 'backfill', error: problems.join(' ') || undefined });
         if (set.length) updated.push(ticket.key);
@@ -93,8 +101,8 @@ export function registerDetailSyncResolvers(secureDefine) {
       } catch (e) {
         failed.push({ id, message: e.message });
       }
-    }
-    return { updated, unchanged, failed };
+    });
+    return { updated, unchanged, failed, pending };
   }, { write: true });
 
   secureDefine('getDetailSyncLog', async () => recentDetailChanges(100));

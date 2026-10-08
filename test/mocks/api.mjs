@@ -184,8 +184,9 @@ async function requestJira(as, path, options = {}) {
     site.accounts.set(key, account);
     return json({ accountId: account.accountId, displayName, emailAddress: email }, 201);
   }
-  const getDetails = path.match(/^\/jsm\/csm\/api\/v1\/customer\/([^/?]+)\/details$/);
-  if (getDetails && method === 'GET') {
+  // GET /customer/{id}: the customer with their detail values ('details' itself is the field list, below).
+  const getDetails = path.match(/^\/jsm\/csm\/api\/v1\/customer\/([^/?]+)$/);
+  if (getDetails && method === 'GET' && getDetails[1] !== 'details') {
     const account = [...site.accounts.values()].find((a) => a.accountId === decodeURIComponent(getDetails[1]));
     if (!account) return json({ errorMessage: 'Customer not found' }, 404);
     return json({ details: Object.entries(account.details || {}).map(([name, values]) => ({ name, values })) });

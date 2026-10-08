@@ -80,7 +80,7 @@ test('check then update: fills blanks and placeholders from the reporter, keeps 
   assert.equal(scan.correct, 1);
   assert.equal(scan.kept, 1);
   assert.equal(scan.noDetails, 1);
-  assert.equal(site.requests.filter((r) => r.path.includes('/customer/qm%3Aa/details')).length, 1, 'one lookup per reporter');
+  assert.equal(site.requests.filter((r) => r.path.endsWith('/customer/qm%3Aa')).length, 1, 'one lookup per reporter');
 
   const r = await call('applyDetailSync', { issueIds: scan.needsChange.map((x) => x.id) });
   assert.deepEqual(r.updated, ['SD-1', 'SD-2', 'SD-4']);

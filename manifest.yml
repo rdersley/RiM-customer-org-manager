@@ -38,6 +38,7 @@ permissions:
     - read:customer.detail-field:jira-service-management
     - write:customer.detail:jira-service-management
     - read:customer.detail:jira-service-management
+    - read:customer:jira-service-management
 app:
   runtime:
     name: nodejs22.x

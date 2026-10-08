@@ -25,8 +25,11 @@ async function json(response, what) {
 export const getDetailConfig = async () => (await kvs.get(DETAIL_SYNC_CONFIG_KEY)) || null;
 
 // A customer's detail values ({ name: value }); {} when the reporter isn't a customer with details.
+// GET /customer/{id} returns { id, name, details: [{ name, values }], organizations }. (There is no GET on
+// /customer/{id}/details; that path only takes PUT, and calling it made Jira ask for consent in a loop.)
+// Needs read:customer and read:customer.detail.
 export async function customerDetailsFor(jira, accountId) {
-  const res = await jira.requestJira(route`/jsm/csm/api/v1/customer/${accountId}/details`, { headers });
+  const res = await jira.requestJira(route`/jsm/csm/api/v1/customer/${accountId}`, { headers });
   if (res.status === 404) return {};
   return readCustomerDetails(await json(res, 'Reading customer details'));
 }

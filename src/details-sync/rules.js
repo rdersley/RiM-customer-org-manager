@@ -54,6 +54,21 @@ export function evaluateTicket({ fields, details, config }) {
   return { status: changes.length ? 'needs-change' : 'correct', changes, kept };
 }
 
+// The customer key a ticket carries: { detailName, value } from the match field, or null when the field
+// isn't set up, is empty, or holds a placeholder.
+export function ticketMatchKey(fields, config) {
+  const m = config.matchFieldId && config.mappings.find((x) => x.fieldId === config.matchFieldId);
+  if (!m) return null;
+  const value = readFieldText(fields?.[m.fieldId]);
+  const placeholders = new Set((config.placeholders || []).map(norm));
+  if (!value || placeholders.has(norm(value))) return null;
+  return { detailName: m.detailName, value };
+}
+
+// Of the customers a detail search returned, those whose detail really equals the value (ignoring case):
+// Jira's search may match loosely. [{ id, details }] → [{ id, details }].
+export const exactDetailMatches = (found, detailName, value) => found.filter((c) => norm(c.details?.[detailName]) === norm(value));
+
 // The value to send to Jira for a field. A select gets the saved option that matches (ignoring case).
 // A value missing from the saved options is still sent, marked `unverified`: the options were read when
 // the settings were saved and can be out of date (on the work site "VHQ" was a real Base option that the
@@ -87,7 +102,10 @@ export function normaliseDetailConfig(input) {
     .map((k) => String(k ?? '').trim().toUpperCase()).filter((k) => /^[A-Z][A-Z0-9_]{0,254}$/.test(k)))];
   const placeholders = [...new Set((Array.isArray(config.placeholders) ? config.placeholders : DEFAULT_PLACEHOLDERS)
     .map((p) => String(p ?? '').trim().slice(0, 100)).filter(Boolean))].slice(0, 20);
-  const normalised = { enabled: config.enabled === true, projectKeys, mappings, placeholders };
+  // Optional: a mapped ticket field (e.g. Crew code) that identifies the customer. When a ticket has a
+  // value in it, the customer whose detail has that value is used instead of the reporter.
+  const matchFieldId = mappings.some((m) => m.fieldId === config.matchFieldId) ? String(config.matchFieldId) : '';
+  const normalised = { enabled: config.enabled === true, projectKeys, mappings, placeholders, matchFieldId };
   if (normalised.enabled) {
     if (!normalised.mappings.length) throw new Error('Add at least one customer detail → ticket field row before turning this on.');
     if (!normalised.projectKeys.length) throw new Error('Choose at least one project before turning this on.');

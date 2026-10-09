@@ -2,7 +2,7 @@
 // api.asApp() from the issue event trigger.
 import { route } from '@forge/api';
 import { kvs, WhereConditions } from '@forge/kvs';
-import { readCustomerDetails, evaluateTicket, fieldValue, detailsJql } from './rules.js';
+import { readCustomerDetails, evaluateTicket, fieldValue, detailsJql, ticketMatchKey, exactDetailMatches } from './rules.js';
 
 export const DETAIL_SYNC_CONFIG_KEY = 'detail-sync-config';
 // Log entries hold issue keys and field names only (no customer values); they expire after 90 days.
@@ -52,9 +52,49 @@ export async function fetchDetailTicket(jira, issueIdOrKey, config) {
 }
 
 // Works out a ticket's changes, reading the reporter's details through `detailsOf` (cached by caller).
-export async function evaluateDetailTicket(ticket, config, detailsOf) {
-  if (!ticket.reporterId || !config.projectKeys.includes(ticket.projectKey)) return { status: 'out-of-scope', changes: [], kept: [] };
+// Works out a ticket's changes. When the ticket has a value in the match field (e.g. Crew code), the
+// customer with that detail value is used, even if the reporter is someone else; a code no customer has,
+// or more than one has, changes nothing and is reported. Otherwise the reporter's details are used.
+// `detailsOf` and `byDetail` are the per-run caches from detailsCache / detailSearchCache.
+export async function evaluateDetailTicket(ticket, config, detailsOf, byDetail = null) {
+  if (!config.projectKeys.includes(ticket.projectKey)) return { status: 'out-of-scope', changes: [], kept: [] };
+  const key = byDetail ? ticketMatchKey(ticket.fields, config) : null;
+  if (key) {
+    const matches = await byDetail(key.detailName, key.value);
+    if (matches.length !== 1) return { status: matches.length ? 'ambiguous-code' : 'unknown-code', code: key.value, changes: [], kept: [] };
+    return { ...evaluateTicket({ fields: ticket.fields, details: matches[0].details, config }), matchedBy: 'code' };
+  }
+  if (!ticket.reporterId) return { status: 'out-of-scope', changes: [], kept: [] };
   return evaluateTicket({ fields: ticket.fields, details: await detailsOf(ticket.reporterId), config });
+}
+
+// Customers whose detail `name` has `value` (POST /customer/search-by-detail-field; read:customer).
+// Returns their ids; at most 10 are asked for, since more than one already means "ambiguous".
+export async function findCustomersByDetail(jira, name, value) {
+  const res = await jira.requestJira(route`/jsm/csm/api/v1/customer/search-by-detail-field?maxResults=10`, {
+    method: 'POST', headers, body: JSON.stringify({ detailFields: [{ name, value }] })
+  });
+  if (res.status === 404) return [];
+  const body = await json(res, `Finding the customer with ${name} ${value}`);
+  const list = body?.customers || body?.results || body?.values || [];
+  return [...new Set(list.map((c) => String(c?.id ?? c?.accountId ?? '')).filter(Boolean))];
+}
+
+// Per-run cache: (detailName, value) → [{ id, details }] of customers whose detail really equals value.
+export function detailSearchCache(jira, detailsOf) {
+  const cache = new Map();
+  return (name, value) => {
+    const k = `${name}\u001f${String(value).trim().toLowerCase()}`;
+    if (!cache.has(k)) {
+      cache.set(k, (async () => {
+        const ids = await findCustomersByDetail(jira, name, value);
+        const found = [];
+        for (const id of ids) found.push({ id, details: await detailsOf(id) });
+        return exactDetailMatches(found, name, value);
+      })().catch((e) => { cache.delete(k); throw e; }));
+    }
+    return cache.get(k);
+  };
 }
 
 // Sets the changed fields in one edit. A select value that isn't an option is skipped and reported.

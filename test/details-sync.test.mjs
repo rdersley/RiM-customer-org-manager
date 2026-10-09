@@ -177,3 +177,48 @@ test('a rate-limited check hands back the page it was on, and carrying on from t
   assert.equal(rest.checked, 2);
   assert.equal(rest.needsChange.length, 2);
 });
+
+test("with Crew code as the match field, the ticket's Crew code wins over the reporter; unknown and shared codes are reported", async () => {
+  await call('saveDetailSyncConfig', settings({ matchFieldId: CREW }));
+  site.requests = [];
+  customer('qm:mgr', { CrewCode: ['MGR01'], Base: ['DUB'] });   // a manager raising tickets for crew
+  customer('qm:crew', { CrewCode: ['ALOLUC'], Base: ['MAD'] });
+  customer('qm:twin1', { CrewCode: ['TWIN'], Base: ['MAD'] });
+  customer('qm:twin2', { CrewCode: ['twin'], Base: ['DUB'] });
+  customer('qm:prefix', { CrewCode: ['ALOLUC2'], Base: ['DUB'] }); // a loose search also returns this one
+  ticket(41, 'qm:mgr', { [CREW]: 'aloluc' });        // reporter is someone else: Base from the crew member
+  ticket(42, 'qm:mgr', { [CREW]: 'NOSUCH' });        // nobody has this code
+  ticket(43, 'qm:mgr', { [CREW]: 'TWIN' });          // two customers have it
+  ticket(44, 'qm:crew');                             // no Crew code: reporter, as before
+  ticket(45, 'qm:mgr', { [CREW]: 'Please Update' }); // a placeholder isn't a code: reporter
+
+  const scan = await call('scanDetailSync', {});
+  const byKey = Object.fromEntries(scan.needsChange.map((x) => [x.key, x.changes.map((c) => `${c.detailName}:${c.to}`).join(',')]));
+  assert.equal(byKey['SD-41'], 'Base:MAD', "Base comes from the Crew code's customer, not the reporter (DUB)");
+  assert.equal(byKey['SD-44'], 'CrewCode:ALOLUC,Base:MAD');
+  assert.equal(byKey['SD-45'], 'CrewCode:MGR01,Base:DUB');
+  assert.equal(scan.unknownCode, 1);
+  assert.equal(scan.ambiguousCode, 1);
+  assert.equal(scan.byCode, 1);
+  assert.deepEqual(scan.codes.map((c) => [c.code, c.status, c.tickets, c.examples]).sort(), [['NOSUCH', 'unknown-code', 1, ['SD-42']], ['TWIN', 'ambiguous-code', 1, ['SD-43']]]);
+
+  const r = await call('applyDetailSync', { issueIds: ['41', '42', '43'] });
+  assert.deepEqual(r.updated, ['SD-41']);
+  assert.deepEqual(site.issues.get('41').fields[BASE], { value: 'MAD' });
+  assert.equal(site.issues.get('42').fields[BASE], null, 'an unknown code changes nothing');
+});
+
+test('a match field must be one of the mapped ticket fields', async () => {
+  const saved = await call('saveDetailSyncConfig', settings({ matchFieldId: 'customfield_99999' }));
+  assert.equal(saved.matchFieldId, '');
+});
+
+test('when the Crew code on a ticket is edited, the ticket is filled again from the new customer', async () => {
+  await call('saveDetailSyncConfig', settings({ matchFieldId: CREW }));
+  customer('qm:mgr', { CrewCode: ['MGR01'], Base: ['DUB'] });
+  customer('qm:crew', { CrewCode: ['ALOLUC'], Base: ['MAD'] });
+  ticket(51, 'qm:mgr', { [CREW]: 'ALOLUC' });
+  const event = { eventType: 'avi:jira:updated:issue', issue: { id: '51', fields: { project: { key: 'SD' } } }, changelog: { items: [{ fieldId: CREW, field: 'Brand code' }] } };
+  const r = await handleIssueEvent(event, {});
+  assert.deepEqual(site.issues.get('51').fields[BASE], { value: 'MAD' }, JSON.stringify(r));
+});

@@ -189,6 +189,16 @@ async function requestJira(as, path, options = {}) {
     site.accounts.set(key, account);
     return json({ accountId: account.accountId, displayName, emailAddress: email }, 201);
   }
+  // Customers whose detail has a value. Like a loose search, it also returns prefix matches (the app
+  // keeps exact ones only).
+  if (path.startsWith('/jsm/csm/api/v1/customer/search-by-detail-field') && method === 'POST') {
+    const [{ name, value }] = JSON.parse(options.body).detailFields;
+    const v = String(value).toLowerCase();
+    const customers = [...site.accounts.values()]
+      .filter((a) => [].concat(a.details?.[name] || []).some((x) => String(x).toLowerCase().startsWith(v)))
+      .map((a) => ({ id: a.accountId, name: a.displayName, email: a.emailAddress }));
+    return json({ page: 0, maxResults: 10, total: customers.length, isLast: true, customers });
+  }
   // GET /customer/{id}: the customer with their detail values ('details' itself is the field list, below).
   const getDetails = path.match(/^\/jsm\/csm\/api\/v1\/customer\/([^/?]+)$/);
   if (getDetails && method === 'GET' && getDetails[1] !== 'details') {

@@ -42,7 +42,8 @@ export default function DetailSync({ invoke, serviceDesks, readOnly }) {
         enabled: Boolean(c.enabled),
         projectKeys: c.projectKeys || [],
         mappings: (c.mappings || []).map((m) => ({ detailName: m.detailName, fieldId: m.fieldId })),
-        placeholders: (c.placeholders || ['Unknown', 'Please Update']).join(', ')
+        placeholders: (c.placeholders || ['Unknown', 'Please Update']).join(', '),
+        matchFieldId: c.matchFieldId || ''
       });
     } catch (e) { setMessage({ kind: 'error', text: e.message }); }
   }
@@ -50,6 +51,7 @@ export default function DetailSync({ invoke, serviceDesks, readOnly }) {
 
   if (!setup || !draft) return <Card title="Ticket details"><Loading text="Loading settings…"/></Card>;
 
+  const fieldName = (id) => setup?.ticketFields.find((f) => f.id === id)?.name || id;
   const update = (patch) => { setDraft((d) => ({ ...d, ...patch })); setMessage(null); };
   const setMapping = (i, patch) => update({ mappings: draft.mappings.map((m, j) => (j === i ? { ...m, ...patch } : m)) });
   const toggleProject = (key) => update({ projectKeys: draft.projectKeys.includes(key) ? draft.projectKeys.filter((k) => k !== key) : [...draft.projectKeys, key] });
@@ -60,6 +62,7 @@ export default function DetailSync({ invoke, serviceDesks, readOnly }) {
       const config = await invoke('saveDetailSyncConfig', {
         ...draft,
         mappings: draft.mappings.filter((m) => m.detailName && m.fieldId),
+        matchFieldId: draft.mappings.some((m) => m.detailName && m.fieldId === draft.matchFieldId) ? draft.matchFieldId : '',
         placeholders: draft.placeholders.split(',').map((p) => p.trim()).filter(Boolean)
       });
       setSetup((s) => ({ ...s, config }));
@@ -85,7 +88,7 @@ export default function DetailSync({ invoke, serviceDesks, readOnly }) {
   ].filter(Boolean).join(' · ');
 
   async function runScan() {
-    const totals = { checked: 0, correct: 0, noDetails: 0, kept: 0, needsChange: [] };
+    const totals = { checked: 0, correct: 0, noDetails: 0, kept: 0, unknownCode: 0, ambiguousCode: 0, byCode: 0, codes: {}, needsChange: [] };
     setScan({ running: true, ...totals, filterSummary });
     setConfirm(false);
     setUpdating(null);
@@ -95,7 +98,12 @@ export default function DetailSync({ invoke, serviceDesks, readOnly }) {
       for (let calls = 0; ; calls += 1) {
         if (calls >= 2000) throw new Error('Ticket check safety limit reached.');
         const r = await invoke('scanDetailSync', { nextPageToken, filter: activeFilter });
-        for (const k of ['checked', 'correct', 'noDetails', 'kept']) totals[k] += r[k] || 0;
+        for (const k of ['checked', 'correct', 'noDetails', 'kept', 'unknownCode', 'ambiguousCode', 'byCode']) totals[k] += r[k] || 0;
+        for (const c of r.codes || []) {
+          const t = totals.codes[c.code] || (totals.codes[c.code] = { code: c.code, status: c.status, tickets: 0, examples: [] });
+          t.tickets += c.tickets;
+          t.examples = [...t.examples, ...c.examples].slice(0, 3);
+        }
         totals.needsChange.push(...(r.needsChange || []));
         if (r.complete) { setScan({ running: false, ...totals, filterSummary }); break; }
         nextPageToken = r.nextPageToken;
@@ -147,6 +155,7 @@ export default function DetailSync({ invoke, serviceDesks, readOnly }) {
   }
 
   const saved = setup.config;
+  const matchLabel = saved?.matchFieldId ? fieldName(saved.matchFieldId) : '';
   return <>
     <Card title="Ticket details" description="Copies the reporter's customer details (for example Crew code and Base) into fields on their tickets. Empty fields and placeholder values are filled; any other value already on a ticket is kept.">
       <div className="nq-stack">
@@ -173,6 +182,12 @@ export default function DetailSync({ invoke, serviceDesks, readOnly }) {
         </table></div> : <EmptyState title="No fields yet" compact>Add a row for each customer detail to copy, for example CrewCode → Crew code.</EmptyState>}
         <Field label="Values to replace" htmlFor="detail-placeholders" help="Comma-separated. A ticket field holding one of these (any case) is treated as empty and filled in.">
           <input id="detail-placeholders" className="nq-input" value={draft.placeholders} onChange={(e) => update({ placeholders: e.target.value })} placeholder="Unknown, Please Update"/>
+        </Field>
+        <Field label="Find the customer by" htmlFor="detail-match-field" help="When a ticket has a value in this field, the customer with that detail is used, even if someone else reported the ticket. Tickets without a value use the reporter.">
+          <select id="detail-match-field" className="nq-select" value={draft.matchFieldId} onChange={(e) => update({ matchFieldId: e.target.value })}>
+            <option value="">The reporter only</option>
+            {draft.mappings.filter((m) => m.detailName && m.fieldId).map((m) => <option key={m.fieldId} value={m.fieldId}>{fieldName(m.fieldId)} on the ticket (matched to the customer's {m.detailName}), then the reporter</option>)}
+          </select>
         </Field>
         <label className="nq-check"><input type="checkbox" checked={draft.enabled} onChange={(e) => update({ enabled: e.target.checked })}/> Fill in new tickets automatically (and tickets whose reporter changes)</label>
         <div className="nq-spread">
@@ -224,7 +239,16 @@ export default function DetailSync({ invoke, serviceDesks, readOnly }) {
           <div className="nq-stat nq-stat--warning"><strong className="nq-stat__value">{scan.needsChange.length.toLocaleString()}</strong><span className="nq-stat__label">Can be filled</span></div>
           <div className="nq-stat"><strong className="nq-stat__value">{scan.kept.toLocaleString()}</strong><span className="nq-stat__label">Other value kept</span></div>
           <div className="nq-stat"><strong className="nq-stat__value">{scan.noDetails.toLocaleString()}</strong><span className="nq-stat__label">Reporter has no details</span></div>
+          {matchLabel && <div className="nq-stat nq-stat--danger"><strong className="nq-stat__value">{(scan.unknownCode + scan.ambiguousCode).toLocaleString()}</strong><span className="nq-stat__label">{matchLabel} not matched</span></div>}
         </div>}
+        {scan && matchLabel && scan.byCode > 0 && <p className="nq-help">{plural(scan.byCode, 'ticket')} matched to a customer by {matchLabel}.</p>}
+        {scan && !scan.running && Object.keys(scan.codes || {}).length > 0 && <details>
+          <summary>{plural(Object.keys(scan.codes).length, `${matchLabel || 'code'} value`)} that don't match exactly one customer</summary>
+          <div className="nq-table-wrap"><table className="nq-table">
+            <thead><tr><th>{matchLabel || 'Code'}</th><th>Problem</th><th>Tickets</th><th>For example</th></tr></thead>
+            <tbody>{Object.values(scan.codes).sort((a, b) => b.tickets - a.tickets).slice(0, 200).map((c) => <tr key={c.code}><td>{c.code}</td><td>{c.status === 'ambiguous-code' ? 'More than one customer has it' : 'No customer has it'}</td><td>{c.tickets.toLocaleString()}</td><td>{c.examples.join(', ')}</td></tr>)}</tbody>
+          </table></div>
+        </details>}
         {scan && !scan.running && !scan.error && <p className="nq-help">Last check: {scan.filterSummary ? `tickets ${scan.filterSummary}` : 'all tickets in the saved projects'}.</p>}
         {scan?.running && <Loading text={scan.waiting ? `Jira asked the app to slow down. Carrying on in 30 seconds… (${scan.checked.toLocaleString()} checked so far)` : `Checking tickets… ${scan.checked.toLocaleString()} so far.`}/>}
         {scan && !scan.running && scan.needsChange.length > 0 && <>

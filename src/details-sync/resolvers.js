@@ -4,11 +4,12 @@ import api from '@forge/api';
 import { kvs } from '@forge/kvs';
 import { retrying } from '../http.js';
 import { detectFields, fieldOptions } from '../sync/jira.js';
+import { changelogTouchesField } from '../sync/rules.js';
 import { mapLimit } from '../import/finalise.js';
 import { normaliseDetailConfig, normaliseScanFilter, reporterChanged } from './rules.js';
 import {
   DETAIL_SYNC_CONFIG_KEY, getDetailConfig, fetchDetailTicket, toDetailTicket, evaluateDetailTicket,
-  applyTicketChanges, logDetailChange, recentDetailChanges, searchDetailPage, detailsCache
+  applyTicketChanges, logDetailChange, recentDetailChanges, searchDetailPage, detailsCache, detailSearchCache
 } from './jira.js';
 
 const SCAN_BUDGET_MS = 15000;
@@ -51,10 +52,13 @@ export function registerDetailSyncResolvers(secureDefine) {
     if (!config?.mappings?.length || !config?.projectKeys?.length) throw new Error('Save the field mappings and projects first.');
     const jira = retrying(api.asUser());
     const detailsOf = detailsCache(jira);
+    const byDetail = detailSearchCache(jira, detailsOf);
     const filter = normaliseScanFilter(payload?.filter);
     const deadline = Date.now() + SCAN_BUDGET_MS;
     let nextPageToken = payload?.nextPageToken || null;
-    const totals = { checked: 0, correct: 0, noDetails: 0, kept: 0 };
+    const totals = { checked: 0, correct: 0, noDetails: 0, kept: 0, unknownCode: 0, ambiguousCode: 0, byCode: 0 };
+    // Codes on tickets that match no customer (or several), with how many tickets carry each.
+    const codes = {};
     const needsChange = [];
     let complete = false;
     while (Date.now() < deadline) {
@@ -64,17 +68,25 @@ export function registerDetailSyncResolvers(secureDefine) {
       try {
         body = await searchDetailPage(jira, config, nextPageToken, SCAN_PAGE_SIZE, filter);
         tickets = (body?.issues || []).map(toDetailTicket);
-        results = await mapLimit(tickets, LOOKUP_CONCURRENCY, (t) => evaluateDetailTicket(t, config, detailsOf));
+        results = await mapLimit(tickets, LOOKUP_CONCURRENCY, (t) => evaluateDetailTicket(t, config, detailsOf, byDetail));
       } catch (e) {
         // Jira is rate-limiting the app even after the retries in http.js. Hand back what's done and the
         // page still to do; the page waits and carries on from there.
-        if (e?.status === 429 || /\b429\b/.test(String(e?.message))) return { ...totals, needsChange, nextPageToken, complete: false, rateLimited: true };
+        if (e?.status === 429 || /\b429\b/.test(String(e?.message))) return { ...totals, codes: Object.values(codes), needsChange, nextPageToken, complete: false, rateLimited: true };
         throw e;
       }
       tickets.forEach((t, i) => {
         const r = results[i];
         totals.checked += 1;
         if (r.kept.length) totals.kept += 1;
+        if (r.matchedBy === 'code') totals.byCode += 1;
+        if (r.status === 'unknown-code' || r.status === 'ambiguous-code') {
+          totals[r.status === 'unknown-code' ? 'unknownCode' : 'ambiguousCode'] += 1;
+          const c = codes[r.code] || (codes[r.code] = { code: r.code, status: r.status, tickets: 0, examples: [] });
+          c.tickets += 1;
+          if (c.examples.length < 3) c.examples.push(t.key);
+          return;
+        }
         if (r.status === 'needs-change') needsChange.push({ id: t.id, key: t.key, changes: r.changes.map(({ detailName, from, to }) => ({ detailName, from, to })) });
         else if (r.status === 'correct') totals.correct += 1;
         else totals.noDetails += 1;
@@ -82,7 +94,7 @@ export function registerDetailSyncResolvers(secureDefine) {
       nextPageToken = body?.nextPageToken || null;
       if (!nextPageToken || body?.isLast) { complete = true; break; }
     }
-    return { ...totals, needsChange, nextPageToken, complete };
+    return { ...totals, codes: Object.values(codes), needsChange, nextPageToken, complete };
   });
 
   // Updates up to 25 tickets, re-reading each ticket and its reporter's details first.
@@ -93,6 +105,7 @@ export function registerDetailSyncResolvers(secureDefine) {
     if (ids.length > CORRECT_MAX_PER_CALL) throw new Error(`Update at most ${CORRECT_MAX_PER_CALL} tickets per call.`);
     const jira = retrying(api.asUser());
     const detailsOf = detailsCache(jira);
+    const byDetail = detailSearchCache(jira, detailsOf);
     const deadline = Date.now() + (Number(payload?.budgetMs) > 0 ? Math.min(Number(payload.budgetMs), APPLY_BUDGET_MS) : APPLY_BUDGET_MS);
     const updated = [];
     const unchanged = [];
@@ -102,7 +115,7 @@ export function registerDetailSyncResolvers(secureDefine) {
       if (Date.now() >= deadline) { pending.push(id); return; }
       try {
         const ticket = await fetchDetailTicket(jira, id, config);
-        const r = await evaluateDetailTicket(ticket, config, detailsOf);
+        const r = await evaluateDetailTicket(ticket, config, detailsOf, byDetail);
         if (r.status !== 'needs-change') { unchanged.push(ticket.key); return; }
         const { set, problems } = await applyTicketChanges(jira, ticket, config, r.changes);
         await logDetailChange({ issueKey: ticket.key, fields: set, source: 'backfill', error: problems.join(' ') || undefined });
@@ -131,7 +144,8 @@ export async function handleDetailSyncEvent(event) {
   const config = await getDetailConfig();
   if (!config?.enabled) return { skipped: 'disabled' };
   const isUpdate = event?.eventType === 'avi:jira:updated:issue';
-  if (isUpdate && !reporterChanged(event?.changelog)) return { skipped: 'reporter-unchanged' };
+  // An edit matters when the reporter or the match field (e.g. Crew code) changed.
+  if (isUpdate && !reporterChanged(event?.changelog) && !(config.matchFieldId && changelogTouchesField(event?.changelog, config.matchFieldId))) return { skipped: 'reporter-unchanged' };
   const project = event?.issue?.fields?.project?.key;
   if (project && !config.projectKeys.includes(project)) return { skipped: 'out-of-scope' };
   const issueId = event?.issue?.id;
@@ -139,7 +153,8 @@ export async function handleDetailSyncEvent(event) {
 
   const jira = retrying(api.asApp());
   const ticket = await fetchDetailTicket(jira, issueId, config);
-  const r = await evaluateDetailTicket(ticket, config, detailsCache(jira));
+  const detailsOf = detailsCache(jira);
+  const r = await evaluateDetailTicket(ticket, config, detailsOf, detailSearchCache(jira, detailsOf));
   if (r.status !== 'needs-change') return { status: r.status, issueKey: ticket.key };
   try {
     const { set, problems } = await applyTicketChanges(jira, ticket, config, r.changes);

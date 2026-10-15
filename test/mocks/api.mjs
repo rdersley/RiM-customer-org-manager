@@ -163,6 +163,16 @@ async function requestJira(as, path, options = {}) {
     const ids = site.projectOrgs.get(desk?.projectKey) || [];
     return json({ values: ids.map((id) => ({ id, name: 'Org ' + id })), isLastPage: true });
   }
+  // Adding an organisation to a service project (already there is fine; 'deskorg:<id>' in failMembership refuses).
+  const addDeskOrg = path.match(/^\/rest\/servicedeskapi\/servicedesk\/([^/?]+)\/organization$/);
+  if (addDeskOrg && method === 'POST') {
+    const desk = site.serviceDesks.find((d) => d.id === addDeskOrg[1]);
+    const orgId = String(JSON.parse(options.body).organizationId);
+    if (site.failMembership.has('deskorg:' + orgId)) return json({ errorMessage: 'You cannot add this organization' }, 400);
+    const ids = site.projectOrgs.get(desk?.projectKey) || [];
+    if (!ids.includes(orgId)) site.projectOrgs.set(desk?.projectKey, [...ids, orgId]);
+    return { ok: true, status: 204, text: async () => '' };
+  }
   if (path.startsWith('/rest/servicedeskapi/organization') && method === 'POST') {
     const { name } = JSON.parse(options.body);
     if (site.organizations.some((o) => o.name.toLowerCase() === name.toLowerCase())) {

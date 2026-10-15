@@ -92,8 +92,19 @@ export async function finaliseRows(jira, { serviceDeskId, rows }) {
   return addToProjectAndOrganisations(jira, serviceDeskId, results);
 }
 
+// Adds an organisation to a service project (POST /servicedesk/{id}/organization; manage:servicedesk-customer).
+// Adding one that is already there is accepted. Returns '' or Jira's reason.
+export async function addOrganisationToDesk(jira, serviceDeskId, orgId) {
+  const res = await jira.requestJira(route`/rest/servicedeskapi/servicedesk/${serviceDeskId}/organization`, {
+    method: 'POST', headers: experimental, body: JSON.stringify({ organizationId: Number(orgId) })
+  });
+  return res.ok ? '' : errorText(res);
+}
+
 // Adds the rows that have an account (status 'done', accountId, organizationIds) to the service project and
-// their organisations. Returns the rows without organizationIds, with a row 'failed' if a membership failed.
+// their organisations, and adds those organisations to the service project too (without that, the space
+// doesn't show them and tickets there can't use them). Returns the rows without organizationIds, with a row
+// 'failed' if a membership failed.
 export async function addToProjectAndOrganisations(jira, serviceDeskId, results) {
   const found = results.filter((r) => r.status === 'done');
   const deskFailures = await addMembers(jira, route`/rest/servicedeskapi/servicedesk/${serviceDeskId}/customer`, [...new Set(found.map((r) => r.accountId))]);
@@ -104,9 +115,12 @@ export async function addToProjectAndOrganisations(jira, serviceDeskId, results)
     byOrg.get(orgId).add(r.accountId);
   }
   const orgFailures = new Map();
+  const deskOrgFailures = new Map();
   for (const [orgId, ids] of byOrg) {
     const failed = await addMembers(jira, route`/rest/servicedeskapi/organization/${orgId}/user`, [...ids]);
     failed.forEach((why, accountId) => orgFailures.set(`${orgId}:${accountId}`, why));
+    const why = await addOrganisationToDesk(jira, serviceDeskId, orgId);
+    if (why) deskOrgFailures.set(orgId, why);
   }
 
   return results.map(({ organizationIds, ...r }) => {
@@ -116,6 +130,7 @@ export async function addToProjectAndOrganisations(jira, serviceDeskId, results)
     for (const orgId of organizationIds || []) {
       const why = orgFailures.get(`${orgId}:${r.accountId}`);
       if (why) problems.push(`Not added to organisation ${orgId}: ${why}`);
+      if (deskOrgFailures.has(orgId)) problems.push(`Organisation ${orgId} not added to the service project: ${deskOrgFailures.get(orgId)}`);
     }
     if (r.detailErrors?.length) problems.push(...r.detailErrors);
     const { detailErrors, ...rest } = r;

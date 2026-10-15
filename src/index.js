@@ -5,7 +5,7 @@ import { resolverLicenseAllows, isProductionContext, UNLICENSED_MESSAGE } from '
 import { retrying, RATE_LIMITED_MESSAGE } from './http.js';
 import { registerSyncResolvers } from './sync/resolvers.js';
 import { registerDetailSyncResolvers } from './details-sync/resolvers.js';
-import { registerImportFinalise, updateSessionBatch } from './import/finalise.js';
+import { registerImportFinalise, updateSessionBatch, addOrganisationToDesk } from './import/finalise.js';
 import { exportBackupPage, importBackupBatch } from './backup.js';
 import { registerDirectImport } from './import/direct.js';
 import { customerDetails } from './import/customerDetails.js';
@@ -14,7 +14,7 @@ export { customerDetails };
 export { handleIssueEvent } from './sync/events.js';
 
 // Must match package.json (a unit test checks this).
-export const APP_VERSION = '0.8.0';
+export const APP_VERSION = '0.8.1';
 
 // Jira's customer bulk API refuses new tasks while too many earlier ones are unfinished. The browser
 // recognises this message (static/src/importBatch.js) and waits instead of failing the batch.
@@ -204,6 +204,44 @@ async function scanOrganizations(startAt, pages, onPage) {
 
   return { nextStart: start, complete, pagesFetched };
 }
+
+// The organisation ids already added to a service project, a few pages per call (resumable with start).
+secureDefine('getServiceDeskOrganizationBatch', async ({ payload }) => {
+  const serviceDeskId = String(payload?.serviceDeskId || '');
+  if (!/^\d+$/.test(serviceDeskId)) throw new Error('serviceDeskId is required');
+  let start = Math.max(0, Number(payload?.start || 0));
+  const ids = [];
+  const deadline = Date.now() + ORG_LOOKUP_BUDGET_MS;
+  for (let pages = 0; pages < ORG_LOOKUP_MAX_PAGES && Date.now() < deadline; pages += 1) {
+    const body = await jsonResponse(await asUser().requestJira(route`/rest/servicedeskapi/servicedesk/${serviceDeskId}/organization?start=${start}&limit=50`));
+    const values = body?.values || [];
+    ids.push(...values.map((o) => String(o.id)));
+    if (body?.isLastPage || !values.length) return { ids, nextStart: start, complete: true };
+    const next = Number(body?.start ?? start) + Number(body?.limit || 50);
+    if (!Number.isFinite(next) || next <= start) throw new Error('Jira organisation pagination did not advance safely.');
+    start = next;
+  }
+  return { ids, nextStart: start, complete: false };
+});
+
+// Adds up to 50 organisations to a service project, stopping after ~15 s (the rest come back as pending).
+secureDefine('addOrganizationsToServiceDesk', async ({ payload }) => {
+  const serviceDeskId = String(payload?.serviceDeskId || '');
+  if (!/^\d+$/.test(serviceDeskId)) throw new Error('serviceDeskId is required');
+  const ids = [...new Set((Array.isArray(payload?.organizationIds) ? payload.organizationIds : []).map(String).filter((id) => /^\d+$/.test(id)))];
+  if (ids.length > 50) throw new Error('Add at most 50 organisations per call.');
+  const jira = asUser();
+  const deadline = Date.now() + 15000;
+  const added = [];
+  const failed = [];
+  const pending = [];
+  for (const id of ids) {
+    if (Date.now() >= deadline) { pending.push(id); continue; }
+    const why = await addOrganisationToDesk(jira, serviceDeskId, id);
+    if (why) failed.push({ id, message: why }); else added.push(id);
+  }
+  return { added, failed, pending };
+}, { write: true });
 
 secureDefine('getOrganizationIndexBatch', async ({ payload }) => {
   const organizations = [];

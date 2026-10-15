@@ -60,6 +60,11 @@ function App() {
   const [orgs, setOrgs] = useState([]);
   const [customerQuery, setCustomerQuery] = useState('');
   const [orgQuery, setOrgQuery] = useState('');
+  // Which organisations the selected service space has (null until loaded), and the repair selection.
+  const [deskOrgIds, setDeskOrgIds] = useState(null);
+  const [onlyMissing, setOnlyMissing] = useState(false);
+  const [pickedOrgs, setPickedOrgs] = useState(() => new Set());
+  const [addingOrgs, setAddingOrgs] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   // null until known; the app is read-only when the site has no active licence (see src/license.js).
@@ -108,6 +113,48 @@ function App() {
   }, []);
 
   useEffect(() => { if (tab === 'Organisations') loadOrgs(); }, [tab]);
+  useEffect(() => { if (tab === 'Organisations' && desk) loadDeskOrgs(); }, [tab, desk]);
+
+  async function loadDeskOrgs() {
+    setDeskOrgIds(null);
+    setPickedOrgs(new Set());
+    setAddingOrgs(null);
+    try {
+      const ids = new Set();
+      let start = 0;
+      for (let calls = 0; calls < 500; calls += 1) {
+        const r = await invoke('getServiceDeskOrganizationBatch', { serviceDeskId: String(desk), start });
+        r.ids.forEach((id) => ids.add(String(id)));
+        if (r.complete) break;
+        start = r.nextStart;
+      }
+      setDeskOrgIds(ids);
+    } catch (e) { setError(`Couldn't read the organisations in this space: ${e.message}`); }
+  }
+
+  // Adds the picked organisations to the selected space, 50 per call; calls hand back what they had no time for.
+  async function addPickedOrgs() {
+    const queue = [...pickedOrgs];
+    const result = { added: 0, failed: [], total: queue.length, done: 0 };
+    setAddingOrgs({ ...result, running: true });
+    while (queue.length) {
+      const part = queue.splice(0, 50);
+      try {
+        const r = await invoke('addOrganizationsToServiceDesk', { serviceDeskId: String(desk), organizationIds: part });
+        result.added += r.added.length;
+        result.failed.push(...r.failed);
+        queue.unshift(...(r.pending || []));
+        result.done += part.length - (r.pending || []).length;
+        setDeskOrgIds((ids) => new Set([...(ids || []), ...r.added.map(String)]));
+      } catch (e) {
+        result.failed.push(...part.map((id) => ({ id, message: e.message })));
+        result.done += part.length;
+      }
+      setAddingOrgs({ ...result, running: true });
+    }
+    setPickedOrgs(new Set());
+    setAddingOrgs({ ...result, running: false });
+  }
   useEffect(() => { if (tab === 'Customers' && desk) loadCustomers(); }, [tab, desk]);
   useEffect(() => { if (tab === 'Import History') loadHistory(); }, [tab]);
 
@@ -643,8 +690,9 @@ function App() {
   }, { CREATE: 0, UPDATE: 0, SKIP: 0, ERROR: 0, PENDING: 0 }), [preview]);
   const filteredOrgs = useMemo(() => {
     const q = orgQuery.trim().toLowerCase();
-    return q ? orgs.filter((o) => String(o.name || '').toLowerCase().includes(q)) : orgs;
-  }, [orgs, orgQuery]);
+    const byName = q ? orgs.filter((o) => String(o.name || '').toLowerCase().includes(q)) : orgs;
+    return onlyMissing && deskOrgIds ? byName.filter((o) => !deskOrgIds.has(String(o.id))) : byName;
+  }, [orgs, orgQuery, onlyMissing, deskOrgIds]);
   const errorReasons = useMemo(() => {
     const m = new Map();
     preview.filter((r) => r.action === 'ERROR').forEach((r) => m.set(r.reason, (m.get(r.reason) || 0) + 1));
@@ -665,7 +713,7 @@ function App() {
     setConfirmingImport(true);
   }
   const importButtonLabel = `Import ${changeCount.toLocaleString()} customer change${changeCount === 1 ? '' : 's'}${previewSummary.ERROR ? ` (exclude ${previewSummary.ERROR.toLocaleString()} error${previewSummary.ERROR === 1 ? '' : 's'})` : ''}`;
-  const deskPicker = (tab === 'Customers' || tab === 'Import') && serviceDesks.length > 0
+  const deskPicker = (tab === 'Customers' || tab === 'Import' || tab === 'Organisations') && serviceDesks.length > 0
     ? <select className="nq-select" aria-label="Service project" value={desk} onChange={(e) => setDesk(e.target.value)}>{serviceDesks.map((d) => <option key={d.id} value={d.id}>{d.projectName}</option>)}</select>
     : null;
 
@@ -693,10 +741,29 @@ function App() {
         : 'Every organisation on this Jira site.'} actions={<Button appearance="subtle" onClick={loadOrgs} disabled={loading}>Refresh</Button>}>
         <div className="nq-filters">
           <input className="nq-input nq-input--search" value={orgQuery} onChange={(e) => setOrgQuery(e.target.value)} placeholder="Search organisations" aria-label="Search organisations"/>
+          <label className="nq-check"><input type="checkbox" checked={onlyMissing} disabled={!deskOrgIds} onChange={(e) => setOnlyMissing(e.target.checked)}/> Only those not in {deskName}</label>
         </div>
+        {deskOrgIds && orgs.length > 0 && <p className="nq-help">{plural(orgs.filter((o) => deskOrgIds.has(String(o.id))).length, 'organisation')} of {orgs.length.toLocaleString()} {orgs.length === 1 ? 'is' : 'are'} in {deskName}. A service space only shows, and its tickets can only use, organisations added to it. Pick the ones it should have and add them.</p>}
+        {pickedOrgs.size > 0 && !addingOrgs?.running && <Notice kind="info" title={`Add ${plural(pickedOrgs.size, 'organisation')} to ${deskName}?`}>
+          <p>Their customers keep their memberships; the organisations become available in {deskName}. Nothing is removed.</p>
+          <div className="nq-inline"><Button appearance="primary" disabled={readOnly} onClick={addPickedOrgs}>Add {plural(pickedOrgs.size, 'organisation')}</Button><Button onClick={() => setPickedOrgs(new Set())}>Clear selection</Button></div>
+        </Notice>}
+        {addingOrgs && (addingOrgs.running
+          ? <Loading text={`Adding organisations to ${deskName}… ${addingOrgs.done.toLocaleString()} of ${addingOrgs.total.toLocaleString()}`}/>
+          : <Notice kind={addingOrgs.failed.length ? 'warning' : 'success'} title={`Added ${plural(addingOrgs.added, 'organisation')} to ${deskName}`}>{addingOrgs.failed.length ? `${plural(addingOrgs.failed.length, 'organisation')} couldn't be added: ${addingOrgs.failed.slice(0, 5).map((f) => `${orgs.find((o) => String(o.id) === String(f.id))?.name || f.id} (${f.message})`).join('; ')}` : 'They now show in the space.'}</Notice>)}
         {loading && !orgs.length ? <Loading text="Loading organisations…"/>
           : filteredOrgs.length ? <>
-            <div className="nq-table-wrap"><table className="nq-table"><thead><tr><th>Name</th><th>ID</th></tr></thead><tbody>{filteredOrgs.slice(0, 500).map((o) => <tr key={o.id}><td>{o.name}</td><td className="nq-muted">{o.id}</td></tr>)}</tbody></table></div>
+            {deskOrgIds && <div className="nq-inline">
+              <Button appearance="subtle" small onClick={() => setPickedOrgs(new Set(filteredOrgs.slice(0, 500).filter((o) => !deskOrgIds.has(String(o.id))).map((o) => String(o.id))))}>Select all shown that aren't in {deskName}</Button>
+            </div>}
+            <div className="nq-table-wrap"><table className="nq-table"><thead><tr><th aria-label="Select"/><th>Name</th><th>ID</th><th>In {deskName}</th></tr></thead><tbody>{filteredOrgs.slice(0, 500).map((o) => {
+              const inDesk = deskOrgIds?.has(String(o.id));
+              return <tr key={o.id}>
+                <td>{deskOrgIds && !inDesk && <input type="checkbox" aria-label={`Add ${o.name}`} checked={pickedOrgs.has(String(o.id))} onChange={(e) => setPickedOrgs((set) => { const next = new Set(set); if (e.target.checked) next.add(String(o.id)); else next.delete(String(o.id)); return next; })}/>}</td>
+                <td>{o.name}</td><td className="nq-muted">{o.id}</td>
+                <td>{deskOrgIds ? <Lozenge kind={inDesk ? 'success' : 'neutral'}>{inDesk ? 'Yes' : 'No'}</Lozenge> : '…'}</td>
+              </tr>;
+            })}</tbody></table></div>
             {filteredOrgs.length > 500 && <p className="nq-help">Showing the first 500. Search to narrow the list.</p>}
           </>
             : <EmptyState title={orgs.length ? 'No organisations match your search.' : 'No organisations yet'} compact>{orgs.length ? 'Try a different name.' : 'Organisations are created when an import names one that does not exist yet.'}</EmptyState>}
